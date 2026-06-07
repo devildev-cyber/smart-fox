@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "Local-first real-time interview assistant for personal interview preparation and permitted live coaching.",
+  "author": "Interview Coach",
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
@@ -17,7 +18,7 @@
     "electron:dev": "concurrently -k -n next,electron \"next dev\" \"cross-env ELECTRON_DEV=1 wait-on http://localhost:3000/session && cross-env ELECTRON_DEV=1 electron electron/main.cjs --no-sandbox\"",
     "electron:start": "npm run build && cross-env NODE_ENV=production electron electron/main.cjs --no-sandbox",
     "prepare:desktop": "node scripts/prepare-desktop.mjs",
-    "dist:win": "npm run build && npm run prepare:desktop && electron-builder --win",
+    "dist:win": "npm run build && npm run prepare:desktop && electron-builder --win --publish never",
     "release:win": "npm run build && npm run prepare:desktop && electron-builder --win --publish always"
   },
   "main": "electron/main.cjs",
