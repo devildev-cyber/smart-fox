@@ -143,11 +143,22 @@ and run — no Node, no source, no terminal.
 - **On a Windows 11 machine:** `npm install` then `npm run dist:win`. The
   installer appears in `release/` as `Interview Coach-Setup-<version>.exe`.
 - **Via GitHub Actions (recommended):** the `Build Windows installer` workflow
-  builds on `windows-latest`. Trigger it from the Actions tab, or push a tag
-  like `v1.0.0`. Download the installer from the workflow's artifacts.
+  builds on `windows-latest`.
+  - **Manual run** (Actions tab): produces a downloadable `.exe` artifact.
+  - **Tag push** (`git tag v1.0.0 && git push --tags`): builds **and publishes a
+    GitHub Release** with the installer + update metadata.
 
 > The installer must be built on Windows (so Prisma's Windows query engine is
 > generated). Building from Linux/macOS won't produce a working Windows app.
+
+### Auto-updates
+
+The packaged app uses `electron-updater` to check **GitHub Releases** on launch
+and install newer versions in the background. To ship an update: bump the
+`version` in `package.json`, commit, then push a matching tag (e.g. `v1.0.1`).
+The workflow publishes the Release, and installed apps update themselves on next
+launch. (Requires the repo's GitHub Releases to be public, or a token for
+private repos.)
 
 **What the packaged app does at runtime:**
 

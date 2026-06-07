@@ -15,6 +15,15 @@ const net = require("net");
 const fs = require("fs");
 const { spawn, fork } = require("child_process");
 
+// Optional: present only in packaged builds. Guarded so dev/source runs don't
+// fail if it isn't installed.
+let autoUpdater = null;
+try {
+  ({ autoUpdater } = require("electron-updater"));
+} catch {
+  autoUpdater = null;
+}
+
 const isDev = process.env.ELECTRON_DEV === "1";
 const PORT = Number(process.env.PORT || 3000);
 const APP_URL = `http://localhost:${PORT}/session`;
@@ -177,7 +186,11 @@ ipcMain.on("livecaptions:start", (event) => {
   }
   if (captionProc) return;
 
-  const script = path.join(__dirname, "livecaptions.ps1");
+  // The script is read by an external process (powershell.exe), which cannot
+  // see inside app.asar — resolve to the unpacked copy.
+  const script = path
+    .join(__dirname, "livecaptions.ps1")
+    .replace("app.asar", "app.asar.unpacked");
   captionProc = spawn(
     "powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
@@ -222,6 +235,13 @@ app.whenReady().then(async () => {
   }
   createWindow();
   registerShortcuts();
+
+  // Check GitHub Releases for a newer version and install it in the background.
+  if (app.isPackaged && autoUpdater) {
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      console.error("[updater]", err);
+    });
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

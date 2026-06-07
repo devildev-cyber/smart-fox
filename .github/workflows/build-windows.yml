@@ -1,12 +1,16 @@
 name: Build Windows installer
 
-# Builds the packaged Windows (.exe) installer. Run manually from the Actions
-# tab, or automatically when you push a version tag like v1.0.0.
+# Manual runs (Actions tab) produce a downloadable artifact.
+# Pushing a version tag like v1.0.0 builds AND publishes a GitHub Release,
+# which the app's auto-updater reads to deliver updates.
 on:
   workflow_dispatch:
   push:
     tags:
       - "v*"
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -22,13 +26,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Windows installer
-        run: npm run dist:win
+      - name: Build and publish release (tag push)
+        if: github.ref_type == 'tag'
+        run: npm run release:win
         env:
-          # Build-time placeholder; the packaged app uses a per-user SQLite file.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DATABASE_URL: file:./prisma/dev.db
 
-      - name: Upload installer
+      - name: Build installer only (manual run)
+        if: github.ref_type != 'tag'
+        run: npm run dist:win
+        env:
+          DATABASE_URL: file:./prisma/dev.db
+
+      - name: Upload installer artifact
+        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
           name: interview-coach-windows
