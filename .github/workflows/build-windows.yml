@@ -23,8 +23,29 @@ jobs:
           node-version: 20
           cache: npm
 
+      # Cache the Electron binary + electron-builder's download cache (Electron
+      # zip, NSIS, 7zip, winCodeSign) so they aren't re-downloaded every run.
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
       - name: Install dependencies
         run: npm ci
+
+      # Cache the Next.js build cache for faster incremental production builds.
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('src/**', 'prisma/**', 'next.config.mjs') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-
 
       - name: Build and publish release (tag push)
         if: github.ref_type == 'tag'

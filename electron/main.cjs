@@ -13,7 +13,7 @@ const {
 const path = require("path");
 const net = require("net");
 const fs = require("fs");
-const { spawn, fork } = require("child_process");
+const { spawn } = require("child_process");
 
 // Optional: present only in packaged builds. Guarded so dev/source runs don't
 // fail if it isn't installed.
@@ -24,9 +24,19 @@ try {
   autoUpdater = null;
 }
 
+// Pin a space-free app name so userData / log / DB paths are deterministic and
+// safe for the Prisma SQLite file: URL (%APPDATA%\InterviewCoach). The
+// user-facing product name is still "Interview Coach" (build.productName).
+// Must run before the app is ready.
+app.setName("InterviewCoach");
+
 const isDev = process.env.ELECTRON_DEV === "1";
 const PORT = Number(process.env.PORT || 3000);
-const APP_URL = `http://localhost:${PORT}/session`;
+// Use an explicit IPv4 host for both the server bind and the window URL.
+// "localhost" can resolve to IPv6 (::1) on Windows while the server listens on
+// IPv4 (127.0.0.1), which produces a blank/black window.
+const HOST = "127.0.0.1";
+const APP_URL = `http://${HOST}:${PORT}/session`;
 
 /** @type {import("electron").BrowserWindow | null} */
 let mainWindow = null;
@@ -34,7 +44,33 @@ let mainWindow = null;
 let serverProcess = null;
 let pinned = true;
 
-function waitForPort(port, host = "127.0.0.1", timeoutMs = 30000) {
+// Append diagnostics to log files so packaged runs are debuggable (the GUI
+// process has no attached console). Written to both userData and the temp dir
+// so it's easy to find: %APPDATA%\Interview Coach\main.log and
+// %TEMP%\interview-coach-main.log.
+let logTargets = null;
+function logFilePaths() {
+  if (logTargets) return logTargets;
+  if (!app.isReady()) return [];
+  logTargets = [
+    path.join(app.getPath("userData"), "main.log"),
+    path.join(app.getPath("temp"), "interview-coach-main.log"),
+  ];
+  return logTargets;
+}
+function log(...args) {
+  const line = `[${new Date().toISOString()}] ${args.map((a) => String(a)).join(" ")}`;
+  for (const file of logFilePaths()) {
+    try {
+      fs.appendFileSync(file, `${line}\n`);
+    } catch {
+      // ignore logging failures
+    }
+  }
+  console.log(line);
+}
+
+function waitForPort(port, host = HOST, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
     const start = Date.now();
     const attempt = () => {
@@ -64,7 +100,9 @@ function resolvePackagedDatabaseUrl() {
     const seed = path.join(process.resourcesPath, "seed.db");
     if (fs.existsSync(seed)) fs.copyFileSync(seed, userDb);
   }
-  return `file:${userDb}`;
+  // Prisma's SQLite connector is happier with forward slashes; backslashes in
+  // the file: URL can be misinterpreted on Windows.
+  return `file:${userDb.replace(/\\/g, "/")}`;
 }
 
 async function ensureServer() {
@@ -77,20 +115,30 @@ async function ensureServer() {
   // 2. Packaged installer: run the bundled standalone server with Electron's
   //    own Node (no npm/node_modules on the user's machine).
   if (app.isPackaged) {
-    const serverJs = path.join(process.resourcesPath, "app", "server.js");
-    serverProcess = fork(serverJs, [], {
-      cwd: path.join(process.resourcesPath, "app"),
+    const appDir = path.join(process.resourcesPath, "server");
+    const serverJs = path.join(appDir, "server.js");
+    const dbUrl = resolvePackagedDatabaseUrl();
+    log("starting server:", serverJs, "exists:", fs.existsSync(serverJs));
+    log("database:", dbUrl);
+
+    serverProcess = spawn(process.execPath, [serverJs], {
+      cwd: appDir,
       env: {
         ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
         NODE_ENV: "production",
         PORT: String(PORT),
-        HOSTNAME: "127.0.0.1",
-        DATABASE_URL: resolvePackagedDatabaseUrl(),
-        ELECTRON_RUN_AS_NODE: "1",
+        HOSTNAME: HOST,
+        DATABASE_URL: dbUrl,
       },
-      stdio: "inherit",
+      stdio: ["ignore", "pipe", "pipe"],
     });
+    serverProcess.stdout?.on("data", (d) => log("[server]", d.toString().trim()));
+    serverProcess.stderr?.on("data", (d) => log("[server:err]", d.toString().trim()));
+    serverProcess.on("exit", (code) => log("[server] exited with code", code));
+
     await waitForPort(PORT);
+    log("server is up on", `${HOST}:${PORT}`);
     return;
   }
 
@@ -135,15 +183,40 @@ function createWindow() {
       desktopCapturer
         .getSources({ types: ["screen"] })
         .then((sources) => {
-          callback({ video: sources[0], audio: "loopback" });
+          if (sources.length > 0) {
+            callback({ video: sources[0], audio: "loopback" });
+          } else {
+            callback({});
+          }
         })
         .catch(() => callback({}));
     },
     { useSystemPicker: false }
   );
 
-  mainWindow.loadURL(APP_URL);
+  // Retry the load a few times — on first launch the server may need a moment.
+  let loadAttempts = 0;
+  const tryLoad = () => {
+    loadAttempts += 1;
+    mainWindow?.loadURL(APP_URL).catch((err) => log("loadURL error:", err.message));
+  };
+
+  mainWindow.webContents.on(
+    "did-fail-load",
+    (_e, code, desc, url, isMainFrame) => {
+      // -3 is ERR_ABORTED (a navigation superseded by another) — not a failure.
+      if (!isMainFrame || code === -3) return;
+      log("did-fail-load", code, desc, url, "attempt", loadAttempts);
+      if (loadAttempts < 30) setTimeout(tryLoad, 700);
+    }
+  );
+
+  tryLoad();
   mainWindow.once("ready-to-show", () => mainWindow?.show());
+  // Safety net: reveal the window even if "ready-to-show" never fires.
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isVisible()) mainWindow.show();
+  }, 5000);
 }
 
 function registerShortcuts() {
@@ -228,10 +301,11 @@ ipcMain.on("livecaptions:start", (event) => {
 ipcMain.on("livecaptions:stop", () => stopCaptions());
 
 app.whenReady().then(async () => {
+  log("app ready. packaged:", app.isPackaged, "resources:", process.resourcesPath);
   try {
     await ensureServer();
   } catch (err) {
-    console.error(err);
+    log("ensureServer failed:", err instanceof Error ? err.message : String(err));
   }
   createWindow();
   registerShortcuts();
