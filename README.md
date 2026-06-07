@@ -160,6 +160,12 @@ The workflow publishes the Release, and installed apps update themselves on next
 launch. (Requires the repo's GitHub Releases to be public, or a token for
 private repos.)
 
+> Packaging note: electron-builder skips nested directories named
+> `node_modules` inside `extraResources`, so the bundled server's dependencies
+> are copied via a second explicit `extraResources` entry
+> (`.next/standalone/node_modules` → `server/node_modules`). Without it the app
+> crashes with `Cannot find module 'next'`.
+
 **What the packaged app does at runtime:**
 
 - Runs the Next.js **standalone** server with Electron's bundled Node.
