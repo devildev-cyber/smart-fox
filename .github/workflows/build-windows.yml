@@ -1,0 +1,36 @@
+name: Build Windows installer
+
+# Builds the packaged Windows (.exe) installer. Run manually from the Actions
+# tab, or automatically when you push a version tag like v1.0.0.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows installer
+        run: npm run dist:win
+        env:
+          # Build-time placeholder; the packaged app uses a per-user SQLite file.
+          DATABASE_URL: file:./prisma/dev.db
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: interview-coach-windows
+          path: release/*.exe
+          if-no-files-found: error
