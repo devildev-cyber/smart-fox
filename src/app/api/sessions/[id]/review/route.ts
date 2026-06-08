@@ -1,15 +1,17 @@
 import { prisma } from "@/lib/db";
 import { handleRouteError, jsonError, jsonOk } from "@/lib/api";
 import { generateReview } from "@/lib/llm-tasks";
+import { assertAccess } from "@/lib/access";
 
 export const runtime = "nodejs";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   try {
+    await assertAccess(request);
     const session = await prisma.interviewSession.findUnique({
       where: { id },
       include: { turns: { orderBy: { createdAt: "asc" } } },

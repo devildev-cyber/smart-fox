@@ -5,6 +5,7 @@ import {
   FALLBACK_TRANSCRIPTION_MODEL,
   getRuntimeConfig,
 } from "@/lib/runtime-config";
+import { assertAccess } from "@/lib/access";
 
 export const runtime = "nodejs";
 
@@ -17,6 +18,7 @@ const MAX_BYTES = 25 * 1024 * 1024; // OpenAI audio upload limit
  */
 export async function POST(request: Request) {
   try {
+    await assertAccess(request);
     const form = await request.formData();
     const file = form.get("file");
 

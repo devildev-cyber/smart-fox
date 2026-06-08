@@ -5,6 +5,7 @@ import { generateStories } from "@/lib/llm-tasks";
 import { serializeStory } from "@/lib/repo";
 import { safeJsonParse } from "@/lib/utils";
 import { STORY_CATEGORIES } from "@/lib/schemas";
+import { assertAccess } from "@/lib/access";
 
 export const runtime = "nodejs";
 
@@ -13,6 +14,7 @@ export async function POST(request: Request) {
   if (error) return error;
 
   try {
+    await assertAccess(request);
     const candidateRow = await prisma.candidateProfile.findUnique({
       where: { id: data.candidateProfileId },
     });

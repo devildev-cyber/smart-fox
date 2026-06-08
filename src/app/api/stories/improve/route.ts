@@ -4,6 +4,7 @@ import { improveStoryRequestSchema } from "@/lib/schemas";
 import { improveStory } from "@/lib/llm-tasks";
 import { serializeStory } from "@/lib/repo";
 import { safeJsonParse } from "@/lib/utils";
+import { assertAccess } from "@/lib/access";
 
 export const runtime = "nodejs";
 
@@ -12,6 +13,7 @@ export async function POST(request: Request) {
   if (error) return error;
 
   try {
+    await assertAccess(request);
     const row = await prisma.story.findUnique({ where: { id: data.storyId } });
     if (!row) return jsonError("Story not found.", 404);
 

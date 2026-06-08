@@ -1,14 +1,21 @@
-import { jsonError, parseBody, streamTextResponse } from "@/lib/api";
+import { handleRouteError, jsonError, parseBody, streamTextResponse } from "@/lib/api";
 import { rewriteAnswerRequestSchema } from "@/lib/schemas";
 import { streamRewriteAnswer } from "@/lib/llm-tasks";
 import { loadCandidateStructured, loadJobStructured } from "@/lib/repo";
 import { getRuntimeConfig } from "@/lib/runtime-config";
+import { assertAccess } from "@/lib/access";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   const { data, error } = await parseBody(request, rewriteAnswerRequestSchema);
   if (error) return error;
+
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
 
   const cfg = await getRuntimeConfig();
   if (!cfg.openaiApiKey) {

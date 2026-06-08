@@ -4,6 +4,7 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { SiteNav } from "@/components/site-nav";
 import { ElectronTitlebar } from "@/components/electron-titlebar";
+import { AuthGate } from "@/components/auth-gate";
 import { Toaster } from "sonner";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
@@ -26,11 +27,13 @@ export default function RootLayout({
           enableSystem={false}
           disableTransitionOnChange
         >
-          <div className="flex min-h-screen flex-col">
-            <ElectronTitlebar />
-            <SiteNav />
-            <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">{children}</main>
-          </div>
+          <AuthGate>
+            <div className="flex min-h-screen flex-col">
+              <ElectronTitlebar />
+              <SiteNav />
+              <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">{children}</main>
+            </div>
+          </AuthGate>
           <Toaster richColors position="top-center" theme="dark" />
         </ThemeProvider>
       </body>

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError, type z } from "zod";
 import { LlmError } from "./llm";
+import { AccessError } from "./access";
 
 export function jsonOk<T>(data: T, init?: ResponseInit) {
   return NextResponse.json({ ok: true, data }, init);
@@ -72,6 +73,9 @@ export function streamTextResponse(source: AsyncIterable<string>): Response {
  * Convert thrown errors (LLM, Zod, generic) into a consistent JSON response.
  */
 export function handleRouteError(err: unknown): NextResponse {
+  if (err instanceof AccessError) {
+    return jsonError(err.message, err.status);
+  }
   if (err instanceof LlmError) {
     return jsonError(err.message, err.status);
   }

@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { handleRouteError, jsonOk, parseBody } from "@/lib/api";
 import { analyzeJobRequestSchema } from "@/lib/schemas";
 import { extractJobProfile } from "@/lib/llm-tasks";
+import { assertAccess } from "@/lib/access";
 
 export const runtime = "nodejs";
 
@@ -10,6 +11,7 @@ export async function POST(request: Request) {
   if (error) return error;
 
   try {
+    await assertAccess(request);
     const structured = await extractJobProfile(data.rawJobDescription);
 
     const profile = await prisma.jobProfile.create({

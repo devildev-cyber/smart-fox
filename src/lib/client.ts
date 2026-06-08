@@ -1,3 +1,5 @@
+import { getValidAccessToken } from "./supabase-auth";
+
 export interface ApiSuccess<T> {
   ok: true;
   data: T;
@@ -18,12 +20,14 @@ export async function apiFetch<T>(
   input: string,
   init?: RequestInit
 ): Promise<T> {
+  const token = await getValidAccessToken();
   const res = await fetch(input, {
     ...init,
     headers: {
       ...(init?.body && !(init.body instanceof FormData)
         ? { "Content-Type": "application/json" }
         : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers,
     },
   });
@@ -56,12 +60,14 @@ export async function streamFetch(
   init: RequestInit,
   onChunk: (accumulated: string) => void
 ): Promise<string> {
+  const token = await getValidAccessToken();
   const res = await fetch(input, {
     ...init,
     headers: {
       ...(init.body && !(init.body instanceof FormData)
         ? { "Content-Type": "application/json" }
         : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init.headers,
     },
   });

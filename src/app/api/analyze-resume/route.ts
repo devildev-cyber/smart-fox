@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { handleRouteError, jsonOk, parseBody } from "@/lib/api";
 import { analyzeResumeRequestSchema } from "@/lib/schemas";
 import { extractCandidateProfile } from "@/lib/llm-tasks";
+import { assertAccess } from "@/lib/access";
 
 export const runtime = "nodejs";
 
@@ -10,6 +11,7 @@ export async function POST(request: Request) {
   if (error) return error;
 
   try {
+    await assertAccess(request);
     const structured = await extractCandidateProfile(data.rawResumeText);
 
     const profile = await prisma.candidateProfile.create({

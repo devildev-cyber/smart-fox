@@ -202,6 +202,34 @@ private repos.)
 - A **confidence** label reflects evidence strength, and a **risk note** warns when an answer leans on weak support.
 - The **Safer** mode rewrites an answer to remove unsupported claims.
 
+## Access gate (Supabase Auth login)
+
+You can ship a build that only works for accounts you've created, using
+**Supabase Authentication**. No tables and no SQL are required — access is the
+built-in `auth.users` list, managed from the dashboard. Only **public** values
+are embedded in the app (project URL + anon key); the `service_role` key is
+never used.
+
+1. In `src/lib/supabase.ts`, paste your `SUPABASE_URL` and `SUPABASE_ANON_KEY`
+   (anon/public key only). While these are blank the gate is **off** and the app
+   works normally.
+2. In the Supabase dashboard:
+   - **Authentication → Providers → Email**: enable it.
+   - **Authentication → Providers** (or Settings): turn **off** "Allow new users
+     to sign up" so only you can add accounts.
+   - **Authentication → Users → Add user**: create an account (email + password)
+     for each person who should have access.
+3. Control access from **Authentication → Users**:
+   - Grant access: add a user.
+   - Revoke access: delete or ban the user. They lose access within the access
+     token's lifetime (≈1 hour) — refresh and new logins are rejected
+     immediately. To cut everyone off at once, rotate the anon key.
+
+On launch the app shows a sign-in screen. The OpenAI/Deepgram-backed API routes
+also verify the user's token server-side (return 401 when missing/revoked), with
+a short cache so a brief network blip won't kick out a signed-in user
+mid-session.
+
 ## Project structure
 
 ```

@@ -4,7 +4,7 @@
  */
 
 export const PROMPT_VERSIONS = {
-  answer: "answer-v4",
+  answer: "answer-v5",
   detect: "detect-v1",
   candidateExtract: "candidate-extract-v1",
   jobExtract: "job-extract-v1",
@@ -25,28 +25,33 @@ WHAT TO ANSWER:
 - The interviewer may pack several things into one turn. Find EVERY distinct question or prompt they want answered now (a prompt may not end in "?", e.g. "Tell me about a time you led a project", "Walk me through X").
 - Ignore the candidate's own speech, greetings, filler, and anything already answered earlier this session.
 
-LENGTH — match the question, never pad:
-- Simple / factual / logistics (notice period, availability, salary expectation, years of experience, "do you know X?", yes/no) -> answer in ONE short spoken line. A few words is fine, e.g. "Around 2 to 3 weeks." NO bullets, no justification unless they asked for it.
-- Behavioral ("tell me about a time…") -> one lead line, then 2 to 4 light STAR bullets (the situation, what you did, the result). ONE concrete example — not a pile of generic claims.
-- Technical / system design -> default to a concise lead line plus 2 to 3 bullets on the approach and the key tradeoff. Go deeper (more bullets) ONLY when the question is genuinely deep or asks "how". Don't over-explain a simple technical question.
-- "Tell me about yourself" / motivation / culture fit -> a 2 to 3 sentence spoken narrative, no bullets.
-- When in doubt, go shorter. They can always ask you to expand.
+DEPTH — match the question. Trivial questions stay tiny; real questions get real substance:
+- Simple / factual / logistics (notice period, availability, salary expectation, years of experience, "do you know X?", yes/no) -> ONE short spoken line. A few words is fine, e.g. "Around 2 to 3 weeks." No bullets, no justification unless asked.
+- Behavioral ("tell me about a time…") -> a lead line, then 3 to 4 STAR bullets built on ONE real example: the situation, the specific actions you took, the measurable result. Name the actual tools/decisions — enough that the candidate can talk for 30 to 60 seconds.
+- Technical / system design -> a lead line, then 3 to 4 bullets: the approach, the key tradeoff(s), and how you handled scale / reliability / failure. Go deeper when they ask "how". Be specific and technical, not hand-wavy.
+- "Tell me about yourself" / motivation / culture fit -> a 3 to 4 sentence spoken narrative, no bullets.
+- The point is enough CONTENT, said in short sentences. Don't pad trivial questions, but never under-answer a real one.
 
 OUTPUT FORMAT (GitHub-flavored Markdown, no code fences):
 - ONE question -> no header. MULTIPLE -> a short bold header per question, e.g. "**1. Notice period**".
 - Start with the bold lead line: the thing to say first, carrying the strongest keywords.
-- Add bullets ("- ") only when the LENGTH rule above calls for them. A simple question is just the lead line, nothing else.
+- Add bullets ("- ") for real questions per the DEPTH rule. A trivial question is just the lead line, nothing else.
 - Bold the 1 to 3 strongest keywords with **double asterisks**.
 
-SENTENCES — short and casual (this is the #1 rule):
+SENTENCES — short and casual (this is the #1 style rule):
 - Write in SHORT, punchy spoken sentences. One idea per sentence. Aim for ~8 to 14 words; break anything longer into two.
-- This is about HOW each sentence reads, not how long the whole answer is. A detailed technical answer is still made of short sentences — never one long winding sentence.
-- Casual and conversational, like talking to a colleague. Use contractions ("I've", "we'd", "it's").
+- This is about HOW each sentence reads, NOT how much you say. A detailed answer is still made of short sentences — never one long winding sentence.
+- Talk like you're explaining to a teammate at a whiteboard. Contractions ("I've", "we'd", "it's"), concrete nouns, the occasional natural aside.
 - No run-ons, no stacking clauses with "which/and/so that/because…". Cut connective padding.
-- Vary your phrasing across answers — don't reuse the same openers.
 - Lead with a concrete keyword, number, or noun — not throat-clearing like "I think that…", "Well, basically…", "So, …".
-- BANNED filler (never use): "passionate about", "leverage", "delve", "robust", "seamless", "in today's fast-paced", "I'm a strong believer", "excited to", "wide range of", "plays a key/pivotal role", "at the end of the day". Cut hedging like "I think maybe possibly".
-- A little natural and imperfect beats grammatically perfect but generic. Still clear and specific, never vague or rambling.
+- BANNED filler (never use): "passionate about", "leverage", "delve", "robust", "seamless", "in today's fast-paced", "I'm a strong believer", "excited to", "wide range of", "plays a key/pivotal role", "at the end of the day", "it's all about". Cut hedging like "I think maybe possibly".
+- A little natural and imperfect beats grammatically perfect but generic. Still clear and specific, never vague.
+
+SUBSTANCE & VARIETY (kills the generic, repetitive feel):
+- Every bullet must carry a CONCRETE specific: a real tool, number, decision, tradeoff, or outcome from the candidate's background. No filler bullets like "I focus on best practices" or "it's about gradual improvement".
+- Do NOT open every answer the same way. Avoid starting each answer with "At <company>, …". Rotate your opener: lead with the action, the result, the tool, or the decision instead.
+- Pull from DIFFERENT experiences and stories across answers — don't keep returning to the same one recent company every time.
+- If two answers in a session would sound the same, change the angle and the example.
 
 MEMORY:
 - If a question overlaps something already covered this session (see PRIOR ANSWERS), open with a short callback like "Like I said earlier, …" and add only what's NEW. Never repeat a previous answer in full.
@@ -222,10 +227,10 @@ export function buildAnswerSystemPrompt(maxSentences: number, boldKeywords: bool
   const extras: string[] = [];
   if (maxSentences && maxSentences > 0) {
     extras.push(
-      `Length cap (an upper bound, NOT a target): never exceed a lead line plus ${Math.max(
+      `Length cap (an upper bound, NOT a target): don't exceed a lead line plus ${Math.max(
         2,
         Math.min(maxSentences, 5)
-      )} short bullets. Use fewer — often none — when the question is simple. Don't fill the budget for its own sake.`
+      )} short bullets. Trivial questions need zero bullets; real questions should use enough bullets to actually answer them well.`
     );
   }
   if (!boldKeywords) {

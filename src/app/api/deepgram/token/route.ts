@@ -1,4 +1,5 @@
 import { jsonError, jsonOk } from "@/lib/api";
+import { assertAccess, AccessError } from "@/lib/access";
 
 export const runtime = "nodejs";
 
@@ -7,10 +8,17 @@ export const runtime = "nodejs";
  * DEEPGRAM_API_KEY never leaves the server. The browser uses the returned
  * access_token via the WebSocket subprotocol ["bearer", access_token].
  */
-export async function GET() {
+export async function GET(request: Request) {
   const key = process.env.DEEPGRAM_API_KEY?.trim();
   if (!key) {
     return jsonError("Deepgram is not configured.", 503);
+  }
+
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    if (err instanceof AccessError) return jsonError(err.message, err.status);
+    return jsonError("Access check failed.", 403);
   }
 
   try {
