@@ -23,55 +23,58 @@ function normalize(s: string): string {
     .trim();
 }
 
-function isComplete(s: string): boolean {
-  return /[.!?]["')\]]*$/.test(s.trim());
-}
-
 // Windows Live Captions exposes a rolling window that it repeatedly rewrites and
-// replays (the same greeting/question reappears many times as it re-recognizes).
-// A naive prefix-delta therefore re-emits the whole buffer over and over. Instead
-// we reconcile at the sentence level: each finished sentence is committed exactly
-// once (keyed by its normalized form), and the trailing in-progress sentence is
-// tracked separately so it can grow/revise without being duplicated.
+// replays. Crucially, it keeps re-punctuating the SAME sentence as it grows
+// ("...how do you?" -> "...the balance?" -> "...shipping features quickly?"), so
+// committing on punctuation duplicates the question at every length.
+//
+// The reliable signal is position: the LAST sentence in the window is still
+// being revised, so we treat it as the live tail (interim). Every earlier
+// sentence is stable — a new sentence has started after it — so we commit each
+// exactly once, keyed by its normalized form.
 class CaptionReconciler {
   #committedNorm = new Set<string>();
   #pending = "";
+  // Raw non-last sentences from the previous snapshot. We only commit a sentence
+  // once it has stayed identical across two snapshots, so Live Captions can fix
+  // a word in a just-finished sentence before we lock it in.
+  #prevSettled = new Set<string>();
 
   reset() {
     this.#committedNorm = new Set();
     this.#pending = "";
+    this.#prevSettled = new Set();
   }
 
   push(snapshot: string): { finals: string[]; interim: string } {
     const sentences = splitSentences(snapshot);
     const finals: string[] = [];
-    if (sentences.length === 0) return { finals, interim: this.#pending };
-
-    for (const sentence of sentences) {
-      const key = normalize(sentence);
-      if (!key || this.#committedNorm.has(key)) continue;
-
-      if (isComplete(sentence)) {
-        const pendingKey = normalize(this.#pending);
-        this.#committedNorm.add(key);
-        finals.push(sentence);
-        // If this is the finished form of the in-progress tail, retire the tail.
-        if (
-          pendingKey &&
-          (key.startsWith(pendingKey) || pendingKey.startsWith(key))
-        ) {
-          this.#pending = "";
-        }
-      } else {
-        // Trailing partial sentence (the live tail). The newest snapshot is the
-        // most accurate recognition — the window only grows or corrects at the
-        // end, it never scrolls there — so always take the latest. This lets
-        // mid-sentence word changes (e.g. "ref act or" -> "refactor") settle
-        // before the sentence is committed.
-        this.#pending = sentence;
-      }
+    if (sentences.length === 0) {
+      this.#pending = "";
+      this.#prevSettled = new Set();
+      return { finals, interim: "" };
     }
 
+    const lastIdx = sentences.length - 1;
+    const settled = sentences.slice(0, lastIdx);
+
+    for (const sentence of settled) {
+      const key = normalize(sentence);
+      if (!key || this.#committedNorm.has(key)) continue;
+      // Require the exact text to have survived the previous snapshot too. A
+      // sentence that just became non-last this tick waits one more snapshot in
+      // case Live Captions revises a word in it.
+      if (!this.#prevSettled.has(sentence)) continue;
+      this.#committedNorm.add(key);
+      finals.push(sentence);
+    }
+
+    this.#prevSettled = new Set(settled);
+
+    // The trailing sentence is the live tail. Hide it if it's just a replay of a
+    // sentence we already committed (the window can scroll back to it).
+    const tail = sentences[lastIdx];
+    this.#pending = this.#committedNorm.has(normalize(tail)) ? "" : tail;
     return { finals, interim: this.#pending };
   }
 }

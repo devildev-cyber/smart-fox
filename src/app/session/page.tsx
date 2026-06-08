@@ -282,9 +282,9 @@ export default function SessionPage() {
           question
         );
         if (!result) return; // superseded by a newer generate
-        if (!question && result.detected_question.trim()) {
-          setDetectedQuestion(result.detected_question);
-        }
+        // NOTE: never write the inferred question back into the override box —
+        // doing so makes it "stick" and forces every later answer onto a stale
+        // question. The box only ever holds what the user types.
         const answered = result.detected_question.trim() || question;
         lastAnsweredRef.current = answered;
         pushPriorTurn(answered, result.answer);
@@ -824,6 +824,12 @@ export default function SessionPage() {
               {answer && <ConfidenceBadge confidence={answer.confidence} />}
             </CardHeader>
             <CardContent className="space-y-4">
+              {answer?.detected_question && (
+                <p className="text-xs text-muted-foreground">
+                  Answering:{" "}
+                  <span className="text-foreground">{answer.detected_question}</span>
+                </p>
+              )}
               <div className="min-h-[140px] rounded-md bg-secondary/40 p-4 text-xl leading-relaxed">
                 {answer && answer.answer ? (
                   <RichAnswer text={answer.answer} />
