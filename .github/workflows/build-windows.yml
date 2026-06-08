@@ -47,16 +47,46 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-
 
+      # electron-builder downloads helper binaries (Electron, winCodeSign, NSIS)
+      # from GitHub, which intermittently returns 5xx/timeouts. Retry so a
+      # transient network blip doesn't fail the whole build. Successful downloads
+      # land in the cache above, so retries are cheap.
       - name: Build and publish release (tag push)
         if: github.ref_type == 'tag'
-        run: npm run release:win
+        shell: pwsh
+        run: |
+          $max = 3
+          for ($i = 1; $i -le $max; $i++) {
+            Write-Host "::group::Build attempt $i of $max"
+            npm run release:win
+            $code = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($code -eq 0) { exit 0 }
+            Write-Warning "Build attempt $i failed (exit $code)."
+            if ($i -lt $max) { Start-Sleep -Seconds 20 }
+          }
+          Write-Error "Build failed after $max attempts."
+          exit 1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DATABASE_URL: file:./prisma/dev.db
 
       - name: Build installer only (manual run)
         if: github.ref_type != 'tag'
-        run: npm run dist:win
+        shell: pwsh
+        run: |
+          $max = 3
+          for ($i = 1; $i -le $max; $i++) {
+            Write-Host "::group::Build attempt $i of $max"
+            npm run dist:win
+            $code = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($code -eq 0) { exit 0 }
+            Write-Warning "Build attempt $i failed (exit $code)."
+            if ($i -lt $max) { Start-Sleep -Seconds 20 }
+          }
+          Write-Error "Build failed after $max attempts."
+          exit 1
         env:
           DATABASE_URL: file:./prisma/dev.db
 
