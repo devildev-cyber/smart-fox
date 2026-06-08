@@ -63,16 +63,12 @@ class CaptionReconciler {
           this.#pending = "";
         }
       } else {
-        // Trailing partial sentence (the live tail). Keep the longest variant and
-        // tolerate minor revisions.
-        const pendingKey = normalize(this.#pending);
-        if (
-          !pendingKey ||
-          key.startsWith(pendingKey) ||
-          sentence.length >= this.#pending.length
-        ) {
-          this.#pending = sentence;
-        }
+        // Trailing partial sentence (the live tail). The newest snapshot is the
+        // most accurate recognition — the window only grows or corrects at the
+        // end, it never scrolls there — so always take the latest. This lets
+        // mid-sentence word changes (e.g. "ref act or" -> "refactor") settle
+        // before the sentence is committed.
+        this.#pending = sentence;
       }
     }
 

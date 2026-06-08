@@ -204,6 +204,72 @@ export async function callJson<S extends z.ZodTypeAny>({
   }
 }
 
+interface StreamTextOptions {
+  model: string;
+  system: string;
+  user: string;
+  temperature?: number;
+}
+
+/**
+ * Stream a free-text (Markdown) response from the Responses API as an async
+ * iterable of text deltas. Used for live interview answers so the candidate sees
+ * words appear immediately. Errors are normalized to LlmError.
+ */
+export async function* streamText({
+  model,
+  system,
+  user,
+  temperature = 0.6,
+}: StreamTextOptions): AsyncGenerator<string> {
+  const openai = await getClient();
+  const reasoning = isReasoningModel(model);
+
+  const params: OpenAI.Responses.ResponseCreateParamsStreaming = {
+    model,
+    instructions: system,
+    input: user,
+    stream: true,
+  };
+  if (reasoning) {
+    params.reasoning = { effort: "low" };
+  } else {
+    params.temperature = temperature;
+  }
+
+  // Reasoning models are slower to first token; give them more headroom.
+  const requestOptions = reasoning ? { timeout: 90_000 } : undefined;
+
+  try {
+    const stream = await openai.responses.create(params, requestOptions);
+    for await (const event of stream) {
+      if (event.type === "response.output_text.delta" && event.delta) {
+        yield event.delta;
+      } else if (event.type === "response.failed") {
+        throw new LlmError("The model failed while streaming the answer.", 502);
+      }
+    }
+  } catch (err) {
+    if (
+      err instanceof OpenAI.APIError &&
+      err.status === 400 &&
+      /temperature/i.test(err.message) &&
+      params.temperature !== undefined
+    ) {
+      // Retry once without temperature for models that reject it.
+      delete params.temperature;
+      const stream = await openai.responses.create(params, requestOptions);
+      for await (const event of stream) {
+        if (event.type === "response.output_text.delta" && event.delta) {
+          yield event.delta;
+        }
+      }
+      return;
+    }
+    throw normalizeError(err);
+  }
+}
+
 function shouldRetry(err: unknown): boolean {
   if (err instanceof LlmError) {
     // Retry on bad-format / empty / gateway issues, not on auth/config errors.

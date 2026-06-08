@@ -104,6 +104,17 @@ export const generateAnswerResponseSchema = z.object({
 });
 export type GenerateAnswerResponse = z.infer<typeof generateAnswerResponseSchema>;
 
+// Trailing ---META--- block parsed from a streamed answer. Confidence is lenient
+// (the model occasionally omits it) and defaults to "medium".
+export const answerMetaSchema = z.object({
+  detected_question: z.string().default(""),
+  keywords: z.array(z.string()).default([]),
+  confidence: confidenceSchema.catch("medium").default("medium"),
+  risk_note: z.string().default(""),
+  possible_follow_up: z.string().default(""),
+});
+export type AnswerMeta = z.infer<typeof answerMetaSchema>;
+
 export const generatedStorySchema = z.object({
   title: z.string(),
   category: storyCategorySchema,
@@ -144,6 +155,12 @@ export const detectQuestionRequestSchema = z.object({
   candidateName: z.string().optional(),
 });
 
+export const priorTurnSchema = z.object({
+  question: z.string().default(""),
+  answerGist: z.string().default(""),
+});
+export type PriorTurnInput = z.infer<typeof priorTurnSchema>;
+
 export const generateAnswerRequestSchema = z
   .object({
     candidateProfileId: z.string().optional(),
@@ -156,6 +173,8 @@ export const generateAnswerRequestSchema = z
     answerMode: answerModeSchema.default("default"),
     maxSentences: z.number().int().min(1).max(8).default(4),
     boldKeywords: z.boolean().default(false),
+    // Prior answered turns this session, so the model can reference instead of repeat.
+    priorTurns: z.array(priorTurnSchema).default([]),
   })
   .refine((d) => d.detectedQuestion.trim() || d.recentTranscript.trim(), {
     message: "Provide a detected question or some recent transcript.",

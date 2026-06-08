@@ -1,4 +1,4 @@
-import { callJson } from "./llm";
+import { callJson, streamText } from "./llm";
 import { getRuntimeConfig } from "./runtime-config";
 import {
   ANSWER_MODE_INSTRUCTIONS,
@@ -14,7 +14,6 @@ import {
 import {
   candidateStructuredSchema,
   detectQuestionResponseSchema,
-  generateAnswerResponseSchema,
   generatedStoriesSchema,
   jobStructuredSchema,
   postInterviewReviewSchema,
@@ -22,7 +21,12 @@ import {
   type CandidateStructured,
   type JobStructured,
 } from "./schemas";
-import { buildAnswerContext, selectContext, type StoryLike } from "./context";
+import {
+  buildAnswerContext,
+  selectContext,
+  type PriorTurn,
+  type StoryLike,
+} from "./context";
 import { STORY_CATEGORY_LABELS } from "./constants";
 
 export async function extractCandidateProfile(rawResumeText: string) {
@@ -67,7 +71,11 @@ export async function detectQuestion(params: {
   });
 }
 
-export async function generateAnswer(params: {
+/**
+ * Generate a live interview answer as streamed Markdown deltas (answer body
+ * followed by a trailing ---META--- JSON block). Used for the live session.
+ */
+export async function streamGenerateAnswer(params: {
   detectedQuestion: string;
   questionType?: string;
   recentTranscript: string;
@@ -78,9 +86,8 @@ export async function generateAnswer(params: {
   maxSentences: number;
   boldKeywords: boolean;
   rawResumeFallback?: string;
+  priorTurns?: PriorTurn[];
 }) {
-  // One-shot mode: no explicit question, so use the transcript both to select
-  // context and to let the model infer the question.
   const oneShot = !params.detectedQuestion.trim();
 
   const selected = selectContext({
@@ -98,27 +105,28 @@ export async function generateAnswer(params: {
     job: params.job,
     selected,
     rawResumeFallback: params.rawResumeFallback,
+    priorTurns: params.priorTurns,
   });
 
   const modeInstruction =
     ANSWER_MODE_INSTRUCTIONS[params.answerMode] ?? ANSWER_MODE_INSTRUCTIONS.default;
 
   const oneShotInstruction = oneShot
-    ? "\n\nNO EXPLICIT QUESTION WAS PROVIDED. From the recent transcript, identify the single latest real question the interviewer is asking the candidate right now. Ignore the candidate's own speech, greetings, and filler. Put that question in 'detected_question' and answer it. If there is no clear question yet, set 'detected_question' to \"\" and give a brief, safe holding answer."
+    ? "\n\nNO EXPLICIT QUESTION WAS PROVIDED. Identify every distinct question or prompt the interviewer is asking the candidate to respond to right now (a prompt may not end in '?'). Ignore the candidate's own speech, greetings, and filler. If there is no clear prompt yet, give a brief, safe holding answer."
     : "";
 
   const system = `${buildAnswerSystemPrompt(params.maxSentences, params.boldKeywords)}\n\nMODE:\n${modeInstruction}${oneShotInstruction}`;
 
-  return callJson({
+  return streamText({
     model: (await getRuntimeConfig()).strongModel,
     system,
     user: context,
-    schema: generateAnswerResponseSchema,
     temperature: params.answerMode === "human" ? 0.8 : 0.6,
   });
 }
 
-export async function rewriteAnswer(params: {
+/** Rewrite an existing answer into a new mode, streamed as Markdown + ---META---. */
+export async function streamRewriteAnswer(params: {
   detectedQuestion: string;
   answer: string;
   answerMode: AnswerMode;
@@ -132,12 +140,17 @@ export async function rewriteAnswer(params: {
 
   const constraints: string[] = [];
   if (params.maxSentences > 0) {
-    constraints.push(`Never exceed ${params.maxSentences} sentences.`);
+    constraints.push(
+      `Keep it to a bold lead line plus at most ${Math.max(
+        2,
+        Math.min(params.maxSentences, 5)
+      )} short bullets.`
+    );
   }
   constraints.push(
     params.boldKeywords
-      ? "You may wrap 1-3 key terms in **double asterisks**."
-      : "Do not use markdown. Plain spoken text only."
+      ? "Bold 1 to 3 key terms with double asterisks."
+      : "Add no emphasis beyond the lead line."
   );
 
   const userParts = [
@@ -145,7 +158,6 @@ export async function rewriteAnswer(params: {
     `EXISTING ANSWER:\n${params.answer}`,
     `TARGET MODE:\n${modeInstruction}`,
   ];
-
   if (params.candidate) {
     userParts.push(
       `CANDIDATE WEAK/MISSING EVIDENCE (never claim these): ${
@@ -154,11 +166,10 @@ export async function rewriteAnswer(params: {
     );
   }
 
-  return callJson({
+  return streamText({
     model: (await getRuntimeConfig()).strongModel,
     system: `${REWRITE_PROMPT}\n\nCONSTRAINTS:\n- ${constraints.join("\n- ")}`,
     user: userParts.join("\n\n"),
-    schema: generateAnswerResponseSchema,
     temperature: params.answerMode === "human" ? 0.85 : 0.5,
   });
 }

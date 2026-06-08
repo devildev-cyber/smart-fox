@@ -10,7 +10,6 @@ import {
   RefreshCw,
   Save,
   Keyboard,
-  Search,
   AlertTriangle,
   MonitorSpeaker,
   Info,
@@ -38,7 +37,8 @@ import {
 } from "@/components/ui/select";
 import { RichAnswer } from "@/components/rich-answer";
 import { ConfidenceBadge } from "@/components/confidence-badge";
-import { apiFetch } from "@/lib/client";
+import { apiFetch, streamFetch } from "@/lib/client";
+import { parseAnswerStream, answerGist } from "@/lib/answer-stream";
 import { getElectronAPI } from "@/lib/electron";
 import { useSettings } from "@/hooks/use-settings";
 import { useDeepgram } from "@/hooks/use-deepgram";
@@ -51,11 +51,14 @@ import {
 // Capture sources include OpenAI/Deepgram audio plus the Windows Live Captions
 // bridge (desktop app only).
 type CaptureChoice = CaptureSource | "livecaption";
-import { QUESTION_TYPE_LABELS } from "@/lib/constants";
+
+// How long the interviewer must pause (no new captions) before we treat it as
+// the end of their turn — the moment to answer. Works for questions and for
+// prompts that don't end in "?" ("Tell me about a time you led a project").
+const END_OF_TURN_MS = 1100;
 import type { AnswerMode } from "@/lib/schemas";
 import type {
   ConfigStatus,
-  DetectResult,
   AnswerResult,
   ProfilesResponse,
   CandidateProfileDto,
@@ -65,6 +68,11 @@ import type {
 interface FinalChunk {
   text: string;
   at: number;
+}
+
+interface PriorTurnState {
+  question: string;
+  answerGist: string;
 }
 
 export default function SessionPage() {
@@ -84,10 +92,11 @@ export default function SessionPage() {
   const [interim, setInterim] = React.useState("");
   const [manualCaption, setManualCaption] = React.useState("");
 
-  // Detection + answer.
+  // Optional question override + answer.
   const [detectedQuestion, setDetectedQuestion] = React.useState("");
-  const [questionType, setQuestionType] = React.useState<string>("other");
-  const [detecting, setDetecting] = React.useState(false);
+  // Question type is no longer separately classified; the one-shot model infers
+  // intent. Kept for the saved turn record.
+  const questionType = "other";
   const [answer, setAnswer] = React.useState<AnswerResult | null>(null);
   const [generating, setGenerating] = React.useState(false);
   const [lastMode, setLastMode] = React.useState<AnswerMode>("default");
@@ -102,7 +111,13 @@ export default function SessionPage() {
   const interimRef = React.useRef("");
   const detectedRef = React.useRef("");
   const lastAnsweredRef = React.useRef("");
-  const detectTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // End-of-turn (pause) detection for the live answer flow.
+  const endOfTurnTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoAnsweredRef = React.useRef("");
+  const handleEndOfTurnRef = React.useRef<() => void>(() => {});
+  // Streaming + session memory.
+  const streamAbort = React.useRef<AbortController | null>(null);
+  const priorTurnsRef = React.useRef<PriorTurnState[]>([]);
 
   React.useEffect(() => {
     finalsRef.current = finals;
@@ -160,61 +175,89 @@ export default function SessionPage() {
     [recentTranscript]
   );
 
-  const selectedCandidate = candidates.find((c) => c.id === candidateId) ?? null;
   const selectedJob = jobs.find((j) => j.id === jobId) ?? null;
 
-  /* ----------------------------- Detection ----------------------------- */
+  /* ------------------------------ Memory ------------------------------ */
 
-  const runDetection = React.useCallback(
-    async (opts?: { silent?: boolean }): Promise<DetectResult | null> => {
-      const transcript = recentTranscript();
-      if (!transcript) {
-        if (!opts?.silent) toast.info("No transcript yet to analyze.");
-        return null;
-      }
-      setDetecting(true);
+  const pushPriorTurn = React.useCallback((question: string, body: string) => {
+    const q = question.trim();
+    if (!q) return;
+    const turn: PriorTurnState = { question: q, answerGist: answerGist(body) };
+    priorTurnsRef.current = [
+      ...priorTurnsRef.current.filter((t) => t.question !== q),
+      turn,
+    ].slice(-8);
+  }, []);
+
+  /* --------------------------- Generation --------------------------- */
+
+  // Shared streaming driver for both Generate and Rewrite. Seeds an empty
+  // answer, streams Markdown deltas into it live, then parses the trailing
+  // metadata. Aborts any earlier in-flight stream. Returns the final answer, or
+  // null if this run was superseded by a newer one.
+  const streamAnswer = React.useCallback(
+    async (
+      url: string,
+      payload: Record<string, unknown>,
+      knownQuestion: string
+    ): Promise<AnswerResult | null> => {
+      streamAbort.current?.abort();
+      const controller = new AbortController();
+      streamAbort.current = controller;
+      setGenerating(true);
+      setAnswer((prev) => ({
+        detected_question: knownQuestion || prev?.detected_question || "",
+        answer: "",
+        keywords: [],
+        confidence: "medium",
+        risk_note: "",
+        possible_follow_up: "",
+      }));
+
       try {
-        const result = await apiFetch<DetectResult>("/api/detect-question", {
-          method: "POST",
-          body: JSON.stringify({
-            recentTranscript: transcript,
-            previousQuestion: lastAnsweredRef.current || undefined,
-            candidateName: selectedCandidate?.name || undefined,
-          }),
-        });
-        if (result.has_question && result.question) {
-          setDetectedQuestion(result.question);
-          setQuestionType(result.question_type);
-          if (result.question.trim() !== lastAnsweredRef.current.trim()) {
-            setQuestionReady(true);
-            setReadyConfidence(result.confidence);
+        const full = await streamFetch(
+          url,
+          { method: "POST", body: JSON.stringify(payload), signal: controller.signal },
+          (acc) => {
+            const { body } = parseAnswerStream(acc);
+            setAnswer((prev) => (prev ? { ...prev, answer: body } : prev));
           }
-        } else if (!opts?.silent) {
-          toast.info("No clear interviewer question found yet.");
-        }
+        );
+
+        const { body, meta, error } = parseAnswerStream(full);
+        if (error) throw new Error(error);
+
+        const finalQuestion = knownQuestion || meta?.detected_question || "";
+        const result: AnswerResult = {
+          detected_question: finalQuestion,
+          answer: body,
+          keywords: meta?.keywords ?? [],
+          confidence: meta?.confidence ?? "medium",
+          risk_note: meta?.risk_note ?? "",
+          possible_follow_up: meta?.possible_follow_up ?? "",
+        };
+        setAnswer(result);
         return result;
       } catch (err) {
-        if (!opts?.silent) {
-          toast.error("Detection failed", {
-            description: err instanceof Error ? err.message : "Unknown error",
-          });
-        }
-        return null;
+        // A superseded stream aborts intentionally — stay silent.
+        if (controller.signal.aborted) return null;
+        throw err;
       } finally {
-        setDetecting(false);
+        if (streamAbort.current === controller) {
+          streamAbort.current = null;
+          setGenerating(false);
+        }
       }
     },
-    [recentTranscript, selectedCandidate]
+    []
   );
-
-  /* ----------------------------- Generation ----------------------------- */
 
   const generate = React.useCallback(
     async (mode: AnswerMode, questionOverride?: string) => {
       const question = (questionOverride ?? detectedRef.current).trim();
       const transcript = recentForAnswer();
       // One-shot: with no explicit question, the model infers it from the
-      // transcript and answers in a single call (no separate detection step).
+      // transcript and answers in a single streaming call.
       if (!question && !transcript) {
         toast.error("Nothing to answer yet", {
           description: "Record/paste some transcript, or type a question.",
@@ -222,11 +265,10 @@ export default function SessionPage() {
         return;
       }
       setLastMode(mode);
-      setGenerating(true);
       try {
-        const result = await apiFetch<AnswerResult>("/api/generate-answer", {
-          method: "POST",
-          body: JSON.stringify({
+        const result = await streamAnswer(
+          "/api/generate-answer/stream",
+          {
             candidateProfileId: candidateId || undefined,
             jobProfileId: jobId || undefined,
             recentTranscript: transcript,
@@ -235,58 +277,59 @@ export default function SessionPage() {
             answerMode: mode,
             maxSentences: settings.maxSentences,
             boldKeywords: settings.boldKeywords,
-          }),
-        });
-        setAnswer(result);
-        // Surface the question the model actually answered.
+            priorTurns: priorTurnsRef.current,
+          },
+          question
+        );
+        if (!result) return; // superseded by a newer generate
         if (!question && result.detected_question.trim()) {
           setDetectedQuestion(result.detected_question);
         }
-        lastAnsweredRef.current = result.detected_question.trim() || question;
+        const answered = result.detected_question.trim() || question;
+        lastAnsweredRef.current = answered;
+        pushPriorTurn(answered, result.answer);
+        // Mark this transcript as handled so end-of-turn auto-answer won't re-fire it.
+        autoAnsweredRef.current = recentForAnswer().replace(/\s+/g, " ").trim();
         setQuestionReady(false);
       } catch (err) {
         toast.error("Could not generate answer", {
           description: err instanceof Error ? err.message : "Unknown error",
         });
-      } finally {
-        setGenerating(false);
       }
     },
-    [candidateId, jobId, questionType, recentForAnswer, settings]
+    [candidateId, jobId, questionType, recentForAnswer, settings, streamAnswer, pushPriorTurn]
   );
 
   const rewrite = React.useCallback(
     async (mode: AnswerMode) => {
       // If there's no answer yet, generating in that mode is the right behavior.
-      if (!answer) {
+      if (!answer || !answer.answer.trim()) {
         await generate(mode);
         return;
       }
       setLastMode(mode);
-      setGenerating(true);
+      const baseQuestion = detectedRef.current.trim() || answer.detected_question;
       try {
-        const result = await apiFetch<AnswerResult>("/api/rewrite-answer", {
-          method: "POST",
-          body: JSON.stringify({
-            detectedQuestion: detectedRef.current || answer.detected_question,
+        await streamAnswer(
+          "/api/rewrite-answer/stream",
+          {
+            detectedQuestion: baseQuestion || answer.answer.slice(0, 80),
             answer: answer.answer,
             answerMode: mode,
             candidateProfileId: candidateId || undefined,
             jobProfileId: jobId || undefined,
             maxSentences: settings.maxSentences,
             boldKeywords: settings.boldKeywords,
-          }),
-        });
-        setAnswer(result);
+          },
+          baseQuestion
+        );
       } catch (err) {
         toast.error("Could not rewrite answer", {
           description: err instanceof Error ? err.message : "Unknown error",
         });
-      } finally {
-        setGenerating(false);
       }
     },
-    [answer, generate, candidateId, jobId, settings]
+    [answer, generate, candidateId, jobId, settings, streamAnswer]
   );
 
   /* --------------------------- Live transcript --------------------------- */
@@ -373,39 +416,28 @@ export default function SessionPage() {
     liveCaptions.stop();
   }, [deepgram, openaiStt, liveCaptions]);
 
-  // Debounced auto-detection after new finalized speech. Never runs per partial.
+  // End-of-turn detection: any new speech (final or interim) resets a short
+  // timer. When the interviewer pauses, the timer fires — that's the moment to
+  // answer. No "?" required, and no separate detection call on the hot path.
   React.useEffect(() => {
-    if (finals.length === 0) return;
-    const latest = finals[finals.length - 1];
-    const triggersQuestion = latest.text.includes("?");
-
-    if (detectTimer.current) clearTimeout(detectTimer.current);
-    detectTimer.current = setTimeout(async () => {
-      const result = await runDetection({ silent: true });
-      const found = result?.has_question && result.question;
-      const isNew = found && result!.question !== lastAnsweredRef.current;
-      if (
-        autoAnswer &&
-        isNew &&
-        (triggersQuestion || result!.confidence !== "low")
-      ) {
-        void generate(lastMode, result!.question!);
-      }
-    }, 900);
-
+    if (!isRecording) return;
+    // They're talking again, so it's not the moment yet.
+    setQuestionReady(false);
+    if (endOfTurnTimer.current) clearTimeout(endOfTurnTimer.current);
+    endOfTurnTimer.current = setTimeout(
+      () => handleEndOfTurnRef.current(),
+      END_OF_TURN_MS
+    );
     return () => {
-      if (detectTimer.current) clearTimeout(detectTimer.current);
+      if (endOfTurnTimer.current) clearTimeout(endOfTurnTimer.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finals]);
+  }, [finals, interim, isRecording]);
 
   const addManualCaption = () => {
     const text = manualCaption.trim();
     if (!text) return;
     setFinals((prev) => [...prev, { text, at: Date.now() }]);
     setManualCaption("");
-    // Detect right away for pasted captions.
-    setTimeout(() => void runDetection({ silent: true }), 50);
   };
 
   const clearTranscript = () => {
@@ -413,6 +445,10 @@ export default function SessionPage() {
     setInterim("");
     finalsRef.current = [];
     interimRef.current = "";
+    autoAnsweredRef.current = "";
+    lastAnsweredRef.current = "";
+    priorTurnsRef.current = [];
+    setQuestionReady(false);
     toast.success("Transcript cleared");
   };
 
@@ -484,6 +520,28 @@ export default function SessionPage() {
   rewriteRef.current = rewrite;
   const lastModeRef = React.useRef(lastMode);
   lastModeRef.current = lastMode;
+  const generatingRef = React.useRef(generating);
+  generatingRef.current = generating;
+  const autoAnswerRef = React.useRef(autoAnswer);
+  autoAnswerRef.current = autoAnswer;
+
+  // Runs when the interviewer pauses (end of turn). In auto mode it generates a
+  // one-shot answer (the model infers the question itself); otherwise it just
+  // signals that now is a good time to press Generate — no LLM call, no waiting.
+  handleEndOfTurnRef.current = () => {
+    if (generatingRef.current) return;
+    const transcript = recentForAnswer();
+    if (!transcript) return;
+    if (autoAnswerRef.current) {
+      const norm = transcript.replace(/\s+/g, " ").trim();
+      if (norm === autoAnsweredRef.current) return;
+      autoAnsweredRef.current = norm;
+      void generateRef.current(lastModeRef.current);
+    } else {
+      setReadyConfidence("");
+      setQuestionReady(true);
+    }
+  };
 
   React.useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -534,7 +592,7 @@ export default function SessionPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Live session</h1>
           <p className="text-sm text-muted-foreground">
-            Detect the interviewer&apos;s question and draft a spoken answer.
+            Capture the interviewer and stream a spoken answer in real time.
           </p>
         </div>
         <SessionStatus sessionId={sessionId} recording={isRecording} />
@@ -543,7 +601,7 @@ export default function SessionPage() {
       {openaiMissing && (
         <Banner>
           OpenAI API key is not configured. Add <code>OPENAI_API_KEY</code> to your{" "}
-          <code>.env</code> to enable detection and answers.
+          <code>.env</code> to enable live answers.
         </Banner>
       )}
 
@@ -726,28 +784,18 @@ export default function SessionPage() {
           </Card>
 
           <Card>
-            <CardHeader className="flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-base">Detected question</CardTitle>
-              <div className="flex items-center gap-2">
-                <Badge variant="outline">
-                  {QUESTION_TYPE_LABELS[questionType as keyof typeof QUESTION_TYPE_LABELS] ??
-                    questionType}
-                </Badge>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => void runDetection()}
-                  disabled={detecting}
-                >
-                  {detecting ? <Spinner /> : <Search className="h-4 w-4" />} Detect
-                </Button>
-              </div>
+            <CardHeader className="space-y-1">
+              <CardTitle className="text-base">Ask a specific question (optional)</CardTitle>
+              <CardDescription>
+                Leave blank to let Generate answer whatever the interviewer just
+                asked. Type here to answer one exact question instead.
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <Textarea
                 value={detectedQuestion}
                 onChange={(e) => setDetectedQuestion(e.target.value)}
-                placeholder="The latest interviewer question (auto-detected, editable)…"
+                placeholder="e.g. Walk me through a system you designed for scale…"
                 className="min-h-[70px] text-base"
               />
             </CardContent>
@@ -759,7 +807,6 @@ export default function SessionPage() {
           <LiveStatus
             recording={isRecording}
             transcribing={openaiStt.processing}
-            detecting={detecting}
             generating={generating}
             questionReady={questionReady}
             readyConfidence={readyConfidence}
@@ -778,10 +825,10 @@ export default function SessionPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="min-h-[140px] rounded-md bg-secondary/40 p-4 text-xl leading-relaxed">
-                {generating ? (
-                  <GeneratingState />
-                ) : answer ? (
+                {answer && answer.answer ? (
                   <RichAnswer text={answer.answer} />
+                ) : generating ? (
+                  <GeneratingState />
                 ) : (
                   <span className="text-base text-muted-foreground">
                     Generate an answer with ⌘/Ctrl + Enter, or the buttons below.
@@ -966,14 +1013,12 @@ function CaptureHint({
 function LiveStatus({
   recording,
   transcribing,
-  detecting,
   generating,
   questionReady,
   readyConfidence,
 }: {
   recording: boolean;
   transcribing: boolean;
-  detecting: boolean;
   generating: boolean;
   questionReady: boolean;
   readyConfidence: string;
@@ -990,13 +1035,10 @@ function LiveStatus({
     pulse = true;
   } else if (questionReady) {
     dot = "bg-success";
-    text = `Question ready (${readyConfidence}) — press ⌘/Ctrl + Enter`;
+    text = readyConfidence
+      ? `Question ready (${readyConfidence}) — press ⌘/Ctrl + Enter`
+      : "They paused — press ⌘/Ctrl + Enter to answer";
     tone = "text-success";
-    pulse = true;
-  } else if (detecting) {
-    dot = "bg-warning";
-    text = "Looking for a question…";
-    tone = "text-foreground";
     pulse = true;
   } else if (transcribing) {
     dot = "bg-warning";

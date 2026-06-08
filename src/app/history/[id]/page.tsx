@@ -24,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { ConfidenceBadge } from "@/components/confidence-badge";
 import { FieldChips } from "@/components/field-list";
+import { RichAnswer } from "@/components/rich-answer";
 import { apiFetch } from "@/lib/client";
 import { formatDate } from "@/lib/utils";
 import { ANSWER_MODE_LABELS, QUESTION_TYPE_LABELS } from "@/lib/constants";
@@ -209,7 +210,9 @@ function TurnCard({ turn, index }: { turn: TurnDto; index: number }) {
         <ConfidenceBadge confidence={turn.confidence} />
       </div>
       <p className="font-medium">{turn.detectedQuestion}</p>
-      <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">{turn.generatedAnswer}</p>
+      <div className="mt-1 text-sm">
+        <RichAnswer text={turn.generatedAnswer} />
+      </div>
 
       {turn.keywords.length > 0 && (
         <div className="mt-3">

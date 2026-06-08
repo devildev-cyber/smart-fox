@@ -174,6 +174,11 @@ export function selectContext(params: {
  * user-message payload for the answer model. Avoids sending the full raw resume
  * when a structured profile is available.
  */
+export interface PriorTurn {
+  question: string;
+  answerGist: string;
+}
+
 export function buildAnswerContext(params: {
   detectedQuestion: string;
   questionType?: string;
@@ -182,6 +187,7 @@ export function buildAnswerContext(params: {
   job?: JobStructured | null;
   selected: SelectedContext;
   rawResumeFallback?: string;
+  priorTurns?: PriorTurn[];
 }): string {
   const { detectedQuestion, questionType, recentTranscript, candidate, job, selected } =
     params;
@@ -244,6 +250,17 @@ export function buildAnswerContext(params: {
       )
       .join("\n");
     parts.push(`RELEVANT APPROVED STORIES:\n${storyText}`);
+  }
+
+  const priorTurns = (params.priorTurns ?? []).filter((t) => t.question.trim());
+  if (priorTurns.length) {
+    const recent = priorTurns.slice(-6);
+    const lines = recent
+      .map((t) => `- Q: ${t.question.trim()} -> ${t.answerGist.trim()}`)
+      .join("\n");
+    parts.push(
+      `PRIOR ANSWERS THIS SESSION (already covered; do not repeat. If the new question overlaps, reference briefly with "As I mentioned earlier" and add only what is new):\n${lines}`
+    );
   }
 
   if (recentTranscript.trim()) {

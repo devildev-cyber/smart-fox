@@ -45,3 +45,48 @@ export async function apiFetch<T>(
 
   return payload.data;
 }
+
+/**
+ * Fetch a plain-text streaming endpoint, invoking `onChunk` with the accumulated
+ * text as it arrives, and returning the full text when done. Non-OK responses
+ * (which carry a JSON error body) are thrown with the server's message.
+ */
+export async function streamFetch(
+  input: string,
+  init: RequestInit,
+  onChunk: (accumulated: string) => void
+): Promise<string> {
+  const res = await fetch(input, {
+    ...init,
+    headers: {
+      ...(init.body && !(init.body instanceof FormData)
+        ? { "Content-Type": "application/json" }
+        : {}),
+      ...init.headers,
+    },
+  });
+
+  if (!res.ok || !res.body) {
+    let message = `Request failed with status ${res.status}`;
+    try {
+      const payload = (await res.json()) as ApiResponse<unknown>;
+      if (payload && payload.ok === false) message = payload.error;
+    } catch {
+      // non-JSON error body; keep the status message
+    }
+    throw new Error(message);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    full += decoder.decode(value, { stream: true });
+    onChunk(full);
+  }
+  full += decoder.decode();
+  return full;
+}

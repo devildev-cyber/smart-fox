@@ -38,6 +38,37 @@ export async function parseBody<S extends z.ZodTypeAny>(
 }
 
 /**
+ * Stream an async iterable of text chunks as a plain-text HTTP response. If the
+ * source throws mid-stream (after headers are sent), an `---ERROR---` marker is
+ * appended so the client can surface it.
+ */
+export function streamTextResponse(source: AsyncIterable<string>): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for await (const chunk of source) {
+          if (chunk) controller.enqueue(encoder.encode(chunk));
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Streaming failed.";
+        controller.enqueue(encoder.encode(`\n\n---ERROR---\n${message}`));
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store, no-transform",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+
+/**
  * Convert thrown errors (LLM, Zod, generic) into a consistent JSON response.
  */
 export function handleRouteError(err: unknown): NextResponse {
