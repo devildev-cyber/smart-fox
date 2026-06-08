@@ -11,7 +11,7 @@ $Descendants = [System.Windows.Automation.TreeScope]::Descendants
 # The caption text lives in an element with AutomationId "CaptionsTextBlock".
 $cond = New-Object System.Windows.Automation.PropertyCondition($AutomationIdProperty, 'CaptionsTextBlock')
 
-function Find-CaptionElement {
+function Get-CaptionText {
   $proc = Get-Process -Name 'LiveCaptions' -ErrorAction SilentlyContinue |
     Where-Object { $_.MainWindowHandle -ne 0 } |
     Select-Object -First 1
@@ -19,32 +19,32 @@ function Find-CaptionElement {
   try {
     $win = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
     if (-not $win) { return $null }
-    return $win.FindFirst($Descendants, $cond)
+    # Join every caption text block in document order. Live Captions may expose a
+    # finalized block plus a live one; concatenating keeps the snapshot stable
+    # instead of flip-flopping between them.
+    $els = $win.FindAll($Descendants, $cond)
+    if (-not $els -or $els.Count -eq 0) { return $null }
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($e in $els) {
+      $t = $e.Current.Name
+      if ($t) { $parts.Add($t) }
+    }
+    if ($parts.Count -eq 0) { return $null }
+    return ($parts -join ' ')
   } catch {
     return $null
   }
 }
 
-$element = $null
 $last = ''
 
 while ($true) {
-  if (-not $element) { $element = Find-CaptionElement }
-
-  if ($element) {
-    try {
-      $text = $element.Current.Name
-      if ($text -and $text -ne $last) {
-        $last = $text
-        $line = [pscustomobject]@{ text = $text } | ConvertTo-Json -Compress
-        [Console]::Out.WriteLine($line)
-        [Console]::Out.Flush()
-      }
-    } catch {
-      # Element went stale (window closed/recreated) - re-acquire next loop.
-      $element = $null
-    }
+  $text = Get-CaptionText
+  if ($text -and $text -ne $last) {
+    $last = $text
+    $line = [pscustomobject]@{ text = $text } | ConvertTo-Json -Compress
+    [Console]::Out.WriteLine($line)
+    [Console]::Out.Flush()
   }
-
   Start-Sleep -Milliseconds 150
 }

@@ -103,6 +103,18 @@ interface JsonCallOptions<S extends z.ZodTypeAny> {
 }
 
 /**
+ * Reasoning models (o-series and the gpt-5 family) don't accept a custom
+ * `temperature` on the Responses API — passing one returns a 400. The
+ * non-reasoning chat variant (gpt-5-chat-*) still does.
+ */
+function isReasoningModel(model: string): boolean {
+  const l = model.toLowerCase();
+  if (/^o\d/.test(l)) return true;
+  if (/^gpt-5/.test(l) && !l.includes("chat")) return true;
+  return false;
+}
+
+/**
  * Call the OpenAI Responses API and parse + validate a JSON result.
  * Retries once on transient failures, with JSON-repair fallback.
  */
@@ -121,14 +133,43 @@ export async function callJson<S extends z.ZodTypeAny>({
     ? user
     : `${user}\n\nReturn the result as a JSON object only.`;
 
+  const reasoning = isReasoningModel(model);
+
   const run = async (): Promise<z.output<S>> => {
-    const response = await openai.responses.create({
+    const params: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
       model,
-      temperature,
       instructions: system,
       input: jsonInput,
       text: { format: { type: "json_object" } },
-    });
+    };
+    if (reasoning) {
+      // Reasoning models reject `temperature`; keep effort low so spoken-answer
+      // latency stays usable.
+      params.reasoning = { effort: "low" };
+    } else {
+      params.temperature = temperature;
+    }
+
+    // Reasoning models are slower; give them more headroom than the client default.
+    const requestOptions = reasoning ? { timeout: 90_000 } : undefined;
+
+    let response;
+    try {
+      response = await openai.responses.create(params, requestOptions);
+    } catch (err) {
+      // Defensive fallback for any model that unexpectedly rejects temperature.
+      if (
+        err instanceof OpenAI.APIError &&
+        err.status === 400 &&
+        /temperature/i.test(err.message) &&
+        params.temperature !== undefined
+      ) {
+        delete params.temperature;
+        response = await openai.responses.create(params, requestOptions);
+      } else {
+        throw err;
+      }
+    }
 
     const raw = response.output_text;
     if (!raw || !raw.trim()) {
