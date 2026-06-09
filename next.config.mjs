@@ -12,6 +12,8 @@ const nextConfig = {
       "./node_modules/.prisma/client/**",
       "./node_modules/@prisma/client/**",
       "./prisma/schema.prisma",
+      // Bundled so the runtime migration applier can upgrade the user's DB.
+      "./prisma/migrations/**",
     ],
   },
   eslint: {

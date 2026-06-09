@@ -35,6 +35,14 @@ cpSync(
   path.join(standalone, "prisma", "schema.prisma")
 );
 
+// Ship the migrations so the app can bring an existing user database up to date
+// on launch (the seed copy happens only once; updates must still migrate).
+cpSync(
+  path.join(root, "prisma", "migrations"),
+  path.join(standalone, "prisma", "migrations"),
+  { recursive: true }
+);
+
 // Build the initial migrated database that gets copied to the user's profile
 // on first launch.
 const seedDb = path.join(root, "prisma", "seed.db");
