@@ -33,6 +33,8 @@ import {
 } from "@/components/ui/select";
 import { apiFetch } from "@/lib/client";
 
+type ReasoningEffort = "fast" | "balanced" | "thorough";
+
 interface SettingsStatus {
   hasKey: boolean;
   keySource: "settings" | "env" | "none";
@@ -40,7 +42,18 @@ interface SettingsStatus {
   strongModel: string;
   fastModel: string;
   transcriptionModel: string;
+  reasoningEffort: ReasoningEffort;
 }
+
+const REASONING_EFFORT_OPTIONS: {
+  value: ReasoningEffort;
+  label: string;
+  hint: string;
+}[] = [
+  { value: "fast", label: "Fast", hint: "Lowest latency + cost (recommended for live answers)" },
+  { value: "balanced", label: "Balanced", hint: "Medium effort — more thorough, a bit slower" },
+  { value: "thorough", label: "Thorough", hint: "High effort — best quality, slowest + priciest" },
+];
 
 interface ModelRecommendation {
   chatModels: string[];
@@ -67,12 +80,15 @@ export function OpenAiConfigCard({
   const [strong, setStrong] = React.useState("");
   const [fast, setFast] = React.useState("");
   const [transcription, setTranscription] = React.useState("");
+  const [effort, setEffort] = React.useState<ReasoningEffort>("fast");
+  const [savingEffort, setSavingEffort] = React.useState(false);
 
   const applyStatus = React.useCallback((s: SettingsStatus) => {
     setStatus(s);
     setStrong(s.strongModel);
     setFast(s.fastModel);
     setTranscription(s.transcriptionModel);
+    setEffort(s.reasoningEffort);
   }, []);
 
   const refresh = React.useCallback(async () => {
@@ -194,6 +210,28 @@ export function OpenAiConfigCard({
       });
     } finally {
       setSavingModels(false);
+    }
+  };
+
+  const saveEffort = async (value: ReasoningEffort) => {
+    const prev = effort;
+    setEffort(value); // optimistic
+    setSavingEffort(true);
+    try {
+      const s = await apiFetch<SettingsStatus>("/api/settings", {
+        method: "POST",
+        body: JSON.stringify({ reasoningEffort: value }),
+      });
+      applyStatus(s);
+      toast.success("Reasoning effort saved");
+      onChanged?.();
+    } catch (err) {
+      setEffort(prev); // revert on failure
+      toast.error("Could not save reasoning effort", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setSavingEffort(false);
     }
   };
 
@@ -334,6 +372,32 @@ export function OpenAiConfigCard({
               {savingModels ? <Spinner /> : <Save className="h-4 w-4" />} Save models
             </Button>
           )}
+        </div>
+
+        {/* Reasoning effort — only affects reasoning models (gpt-5 family, o-series) */}
+        <div className="space-y-1.5 border-t border-border pt-4">
+          <Label className="text-sm font-medium">Reasoning effort</Label>
+          <Select
+            value={effort}
+            onValueChange={(v) => void saveEffort(v as ReasoningEffort)}
+            disabled={savingEffort}
+          >
+            <SelectTrigger className="sm:w-72">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {REASONING_EFFORT_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {REASONING_EFFORT_OPTIONS.find((o) => o.value === effort)?.hint}. Only
+            applies to reasoning models (gpt-5 family, o-series); other models ignore
+            it. Higher effort also slows live answers.
+          </p>
         </div>
       </CardContent>
     </Card>

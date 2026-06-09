@@ -10,6 +10,7 @@ const settingsPatchSchema = z.object({
   strongModel: z.string().nullable().optional(),
   fastModel: z.string().nullable().optional(),
   transcriptionModel: z.string().nullable().optional(),
+  reasoningEffort: z.enum(["fast", "balanced", "thorough"]).nullable().optional(),
 });
 
 async function status() {
@@ -21,6 +22,7 @@ async function status() {
     strongModel: cfg.strongModel,
     fastModel: cfg.fastModel,
     transcriptionModel: cfg.transcriptionModel,
+    reasoningEffort: cfg.reasoningEffort,
   };
 }
 

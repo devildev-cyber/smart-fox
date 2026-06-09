@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { z } from "zod";
-import { getRuntimeConfig } from "./runtime-config";
+import { getRuntimeConfig, type ReasoningEffortTier } from "./runtime-config";
 
 export class LlmError extends Error {
   status: number;
@@ -122,14 +122,24 @@ type ReasoningEffortValue = NonNullable<
   OpenAI.Responses.ResponseCreateParams["reasoning"]
 >["effort"];
 
-/**
- * Fastest acceptable reasoning effort. The gpt-5 family supports "minimal"
- * (barely any reasoning tokens — ideal for extraction + short spoken answers);
- * the o-series only goes as low as "low". Cast because some SDK versions don't
- * yet list "minimal" even though the API accepts it for gpt-5.
- */
-function reasoningEffort(model: string): ReasoningEffortValue {
-  return (/^gpt-5/.test(model.toLowerCase()) ? "minimal" : "low") as ReasoningEffortValue;
+// Maps the user's effort tier to a concrete API value, clamped to what the
+// model accepts. "Fast" wants the cheapest/quickest: the original gpt-5 line
+// (gpt-5, gpt-5-mini, gpt-5-nano) supports "minimal", but versioned variants
+// like gpt-5.5 reject it (supported: none/low/medium/high/xhigh) and the
+// o-series bottoms out at "low" — so both get "low". Balanced/Thorough use
+// medium/high, which every reasoning model accepts. Cast because some SDK
+// versions don't yet list "minimal" even though the API accepts it.
+function reasoningEffort(
+  model: string,
+  tier: ReasoningEffortTier
+): ReasoningEffortValue {
+  if (tier === "balanced") return "medium" as ReasoningEffortValue;
+  if (tier === "thorough") return "high" as ReasoningEffortValue;
+
+  // tier === "fast"
+  const l = model.toLowerCase();
+  // `gpt-5`, `gpt-5-mini`, etc. match, but `gpt-5.5` (dot after the 5) does not.
+  return (/^gpt-5(?:-|$)/.test(l) ? "minimal" : "low") as ReasoningEffortValue;
 }
 
 /**
@@ -146,6 +156,7 @@ export async function callJson<S extends z.ZodTypeAny>({
   maxOutputTokens,
 }: JsonCallOptions<S>): Promise<z.output<S>> {
   const openai = await getClient();
+  const { reasoningEffort: effortTier } = await getRuntimeConfig();
 
   // The Responses API requires the literal word "json" in the input messages
   // when using a json_object text format. Guarantee it for every call.
@@ -163,9 +174,8 @@ export async function callJson<S extends z.ZodTypeAny>({
       text: { format: { type: "json_object" } },
     };
     if (reasoning) {
-      // Reasoning models reject `temperature`; keep effort as low as the family
-      // allows so latency stays usable.
-      params.reasoning = { effort: reasoningEffort(model) };
+      // Reasoning models reject `temperature`; effort comes from the user's tier.
+      params.reasoning = { effort: reasoningEffort(model, effortTier) };
       // CRITICAL: reasoning tokens are billed against the output budget. Without
       // a generous cap the model can spend the whole budget "thinking" and
       // return an empty/truncated body — which looks like "GPT-5 doesn't work"
@@ -257,6 +267,7 @@ export async function* streamText({
   temperature = 0.6,
 }: StreamTextOptions): AsyncGenerator<string> {
   const openai = await getClient();
+  const { reasoningEffort: effortTier } = await getRuntimeConfig();
   const reasoning = isReasoningModel(model);
 
   const params: OpenAI.Responses.ResponseCreateParamsStreaming = {
@@ -266,7 +277,7 @@ export async function* streamText({
     stream: true,
   };
   if (reasoning) {
-    params.reasoning = { effort: reasoningEffort(model) };
+    params.reasoning = { effort: reasoningEffort(model, effortTier) };
     // Leave room for reasoning tokens + the spoken answer so the body isn't
     // starved (reasoning tokens count against the output budget).
     params.max_output_tokens = 4000;

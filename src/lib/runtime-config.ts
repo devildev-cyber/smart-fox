@@ -5,6 +5,12 @@ export const DEFAULT_FAST_MODEL = "gpt-4.1-mini";
 export const DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 export const FALLBACK_TRANSCRIPTION_MODEL = "whisper-1";
 
+// How hard reasoning models (gpt-5 family, o-series) "think" before answering.
+// Only applies to those models; plain chat models ignore it. Higher = slower +
+// pricier, but more thorough on complex tasks.
+export type ReasoningEffortTier = "fast" | "balanced" | "thorough";
+export const DEFAULT_REASONING_EFFORT: ReasoningEffortTier = "fast";
+
 export interface RuntimeConfig {
   openaiApiKey: string;
   /** Where the key came from, for display only. */
@@ -12,6 +18,13 @@ export interface RuntimeConfig {
   strongModel: string;
   fastModel: string;
   transcriptionModel: string;
+  reasoningEffort: ReasoningEffortTier;
+}
+
+function asReasoningTier(value: string | null | undefined): ReasoningEffortTier {
+  return value === "balanced" || value === "thorough"
+    ? value
+    : DEFAULT_REASONING_EFFORT;
 }
 
 const SINGLETON_ID = "singleton";
@@ -53,6 +66,7 @@ export async function getRuntimeConfig(): Promise<RuntimeConfig> {
       DEFAULT_FAST_MODEL,
     transcriptionModel:
       row?.transcriptionModel?.trim() || DEFAULT_TRANSCRIPTION_MODEL,
+    reasoningEffort: asReasoningTier(row?.reasoningEffort),
   };
 }
 
@@ -61,6 +75,7 @@ export async function saveAppConfig(patch: {
   strongModel?: string | null;
   fastModel?: string | null;
   transcriptionModel?: string | null;
+  reasoningEffort?: string | null;
 }) {
   const data = {
     ...(patch.openaiApiKey !== undefined
@@ -74,6 +89,9 @@ export async function saveAppConfig(patch: {
       : {}),
     ...(patch.transcriptionModel !== undefined
       ? { transcriptionModel: normalize(patch.transcriptionModel) }
+      : {}),
+    ...(patch.reasoningEffort !== undefined
+      ? { reasoningEffort: normalize(patch.reasoningEffort) }
       : {}),
   };
 

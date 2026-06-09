@@ -13,6 +13,7 @@ model AppConfig {
   strongModel        String?
   fastModel          String?
   transcriptionModel String?
+  reasoningEffort    String?
   updatedAt          DateTime @updatedAt
 }
 
