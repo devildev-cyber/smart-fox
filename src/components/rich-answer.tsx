@@ -35,7 +35,6 @@ function parseBlocks(text: string): Block[] {
   const lines = (text ?? "").replace(/\r\n/g, "\n").split("\n");
   const blocks: Block[] = [];
   let listItems: string[] = [];
-  let paragraph: string[] = [];
 
   const flushList = () => {
     if (listItems.length) {
@@ -43,34 +42,23 @@ function parseBlocks(text: string): Block[] {
       listItems = [];
     }
   };
-  const flushParagraph = () => {
-    if (paragraph.length) {
-      blocks.push({ type: "p", text: paragraph.join(" ") });
-      paragraph = [];
-    }
-  };
 
   for (const raw of lines) {
-    const line = raw.trimEnd();
-    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    const line = raw.trim();
+    const bullet = line.match(/^[-*]\s+(.*)$/);
 
     if (bullet) {
-      flushParagraph();
       listItems.push(bullet[1]);
       continue;
     }
 
-    if (!line.trim()) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-
+    // Any non-bullet line ends the current list. Each line is its own
+    // paragraph so multi-question blocks and intentional line breaks are
+    // preserved (don't merge separate lines into one run-on paragraph).
     flushList();
-    paragraph.push(line.trim());
+    if (line) blocks.push({ type: "p", text: line });
   }
 
-  flushParagraph();
   flushList();
   return blocks;
 }

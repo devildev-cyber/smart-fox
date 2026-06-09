@@ -100,6 +100,10 @@ interface JsonCallOptions<S extends z.ZodTypeAny> {
   user: string;
   schema: S;
   temperature?: number;
+  /** Override the request timeout. Heavy extraction tasks need more than 30s. */
+  timeoutMs?: number;
+  /** Override the output token cap (e.g. for large structured results). */
+  maxOutputTokens?: number;
 }
 
 /**
@@ -114,6 +118,20 @@ function isReasoningModel(model: string): boolean {
   return false;
 }
 
+type ReasoningEffortValue = NonNullable<
+  OpenAI.Responses.ResponseCreateParams["reasoning"]
+>["effort"];
+
+/**
+ * Fastest acceptable reasoning effort. The gpt-5 family supports "minimal"
+ * (barely any reasoning tokens — ideal for extraction + short spoken answers);
+ * the o-series only goes as low as "low". Cast because some SDK versions don't
+ * yet list "minimal" even though the API accepts it for gpt-5.
+ */
+function reasoningEffort(model: string): ReasoningEffortValue {
+  return (/^gpt-5/.test(model.toLowerCase()) ? "minimal" : "low") as ReasoningEffortValue;
+}
+
 /**
  * Call the OpenAI Responses API and parse + validate a JSON result.
  * Retries once on transient failures, with JSON-repair fallback.
@@ -124,6 +142,8 @@ export async function callJson<S extends z.ZodTypeAny>({
   user,
   schema,
   temperature = 0.5,
+  timeoutMs,
+  maxOutputTokens,
 }: JsonCallOptions<S>): Promise<z.output<S>> {
   const openai = await getClient();
 
@@ -143,15 +163,23 @@ export async function callJson<S extends z.ZodTypeAny>({
       text: { format: { type: "json_object" } },
     };
     if (reasoning) {
-      // Reasoning models reject `temperature`; keep effort low so spoken-answer
-      // latency stays usable.
-      params.reasoning = { effort: "low" };
+      // Reasoning models reject `temperature`; keep effort as low as the family
+      // allows so latency stays usable.
+      params.reasoning = { effort: reasoningEffort(model) };
+      // CRITICAL: reasoning tokens are billed against the output budget. Without
+      // a generous cap the model can spend the whole budget "thinking" and
+      // return an empty/truncated body — which looks like "GPT-5 doesn't work"
+      // for resume/JD/story extraction. Give it ample room for reasoning + JSON.
+      params.max_output_tokens = maxOutputTokens ?? 16000;
     } else {
       params.temperature = temperature;
+      if (maxOutputTokens) params.max_output_tokens = maxOutputTokens;
     }
 
-    // Reasoning models are slower; give them more headroom than the client default.
-    const requestOptions = reasoning ? { timeout: 90_000 } : undefined;
+    // Reasoning models are slower; give them more headroom than the client
+    // default. Callers can override for heavy structured tasks.
+    const timeout = timeoutMs ?? (reasoning ? 90_000 : DEFAULT_TIMEOUT_MS);
+    const requestOptions = { timeout };
 
     let response;
     try {
@@ -173,7 +201,13 @@ export async function callJson<S extends z.ZodTypeAny>({
 
     const raw = response.output_text;
     if (!raw || !raw.trim()) {
-      throw new LlmError("The model returned an empty response.", 502);
+      // Reasoning models that hit the output cap stop with status "incomplete"
+      // and no message text. Surface a clearer, retryable error.
+      const incomplete =
+        response.status === "incomplete"
+          ? ` (stopped early: ${response.incomplete_details?.reason ?? "incomplete"})`
+          : "";
+      throw new LlmError(`The model returned an empty response${incomplete}.`, 502);
     }
 
     const json = extractJson(raw);
@@ -232,7 +266,10 @@ export async function* streamText({
     stream: true,
   };
   if (reasoning) {
-    params.reasoning = { effort: "low" };
+    params.reasoning = { effort: reasoningEffort(model) };
+    // Leave room for reasoning tokens + the spoken answer so the body isn't
+    // starved (reasoning tokens count against the output budget).
+    params.max_output_tokens = 4000;
   } else {
     params.temperature = temperature;
   }

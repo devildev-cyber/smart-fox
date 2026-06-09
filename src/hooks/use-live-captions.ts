@@ -15,67 +15,106 @@ function splitSentences(text: string): string[] {
   return matches ? matches.map((s) => s.trim()).filter(Boolean) : [];
 }
 
-// Normalized key for dedup: lowercase, punctuation/whitespace collapsed.
-function normalize(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+function words(text: string): string[] {
+  return text.split(/\s+/).filter(Boolean);
 }
 
-// Windows Live Captions exposes a rolling window that it repeatedly rewrites and
-// replays. Crucially, it keeps re-punctuating the SAME sentence as it grows
-// ("...how do you?" -> "...the balance?" -> "...shipping features quickly?"), so
-// committing on punctuation duplicates the question at every length.
+// Match key for a word: lowercase, strip punctuation. Lets us align snapshots
+// even as Live Captions re-punctuates or re-cases the same words.
+function normWord(w: string): string {
+  return w.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function sentenceKey(s: string): string {
+  return words(s).map(normWord).filter(Boolean).join(" ");
+}
+
+// Windows Live Captions exposes a single rolling window that it continuously
+// rewrites: it appends new words at the end, REVISES the last few words as it
+// hears more ("...how do you" -> "...how do you balance shipping"), and scrolls
+// old text off the front. Splitting each snapshot into sentences and de-duping
+// by text breaks the moment a word inside a "finished" sentence is revised — the
+// old and new spellings both get committed, which is the duplication users see.
 //
-// The reliable signal is position: the LAST sentence in the window is still
-// being revised, so we treat it as the live tail (interim). Every earlier
-// sentence is stable — a new sentence has started after it — so we commit each
-// exactly once, keyed by its normalized form.
+// Instead we treat the stream as append-with-revision and reconcile by word
+// overlap:
+//   1. Keep a bounded tail of already-committed words.
+//   2. For each snapshot, strip the prefix that overlaps that committed tail —
+//      what's left is the current "live" region, recomputed fresh every tick so
+//      revisions simply replace the old guess (never duplicate it).
+//   3. Commit a sentence only once a LATER sentence has begun (so it can't still
+//      be revised), guarded by a normalized-text set as a final dedup backstop.
 class CaptionReconciler {
-  #committedNorm = new Set<string>();
-  #pending = "";
-  // Raw non-last sentences from the previous snapshot. We only commit a sentence
-  // once it has stayed identical across two snapshots, so Live Captions can fix
-  // a word in a just-finished sentence before we lock it in.
-  #prevSettled = new Set<string>();
+  // Bounded list of committed words, kept only to align the next snapshot.
+  #committedTail: string[] = [];
+  // Normalized text of every sentence already emitted — a hard dedup backstop.
+  #seen = new Set<string>();
+  #live = "";
 
   reset() {
-    this.#committedNorm = new Set();
-    this.#pending = "";
-    this.#prevSettled = new Set();
+    this.#committedTail = [];
+    this.#seen = new Set();
+    this.#live = "";
   }
 
   push(snapshot: string): { finals: string[]; interim: string } {
-    const sentences = splitSentences(snapshot);
+    const snap = snapshot.replace(/\s+/g, " ").trim();
+    if (!snap) return { finals: [], interim: this.#live };
+
+    const live = this.#alignLive(words(snap));
+    const sentences = splitSentences(live);
     const finals: string[] = [];
-    if (sentences.length === 0) {
-      this.#pending = "";
-      this.#prevSettled = new Set();
-      return { finals, interim: "" };
+    let interim = live;
+
+    if (sentences.length > 1) {
+      // Everything before the last sentence is stable: a newer sentence has
+      // started after it, so Live Captions won't revise it anymore.
+      for (const sentence of sentences.slice(0, -1)) {
+        this.#committedTail.push(...words(sentence));
+        const key = sentenceKey(sentence);
+        if (key && !this.#seen.has(key)) {
+          this.#seen.add(key);
+          finals.push(sentence);
+        }
+      }
+      if (this.#committedTail.length > 80) {
+        this.#committedTail = this.#committedTail.slice(-80);
+      }
+      interim = sentences[sentences.length - 1];
     }
 
-    const lastIdx = sentences.length - 1;
-    const settled = sentences.slice(0, lastIdx);
+    this.#live = interim;
+    return { finals, interim };
+  }
 
-    for (const sentence of settled) {
-      const key = normalize(sentence);
-      if (!key || this.#committedNorm.has(key)) continue;
-      // Require the exact text to have survived the previous snapshot too. A
-      // sentence that just became non-last this tick waits one more snapshot in
-      // case Live Captions revises a word in it.
-      if (!this.#prevSettled.has(sentence)) continue;
-      this.#committedNorm.add(key);
-      finals.push(sentence);
+  // Strip the part of the snapshot that overlaps the committed tail and return
+  // the remaining (live) words as text.
+  #alignLive(snapWords: string[]): string {
+    const tail = this.#committedTail;
+    if (tail.length === 0) return snapWords.join(" ");
+
+    const tailNorm = tail.map(normWord);
+    const snapNorm = snapWords.map(normWord);
+
+    // Largest overlap where the END of the committed tail equals the START of
+    // the snapshot (handles the window scrolling off the front).
+    const maxO = Math.min(tail.length, snapWords.length);
+    for (let o = maxO; o >= 1; o--) {
+      let ok = true;
+      for (let i = 0; i < o; i++) {
+        if (tailNorm[tail.length - o + i] !== snapNorm[i]) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) return snapWords.slice(o).join(" ");
     }
 
-    this.#prevSettled = new Set(settled);
-
-    // The trailing sentence is the live tail. Hide it if it's just a replay of a
-    // sentence we already committed (the window can scroll back to it).
-    const tail = sentences[lastIdx];
-    this.#pending = this.#committedNorm.has(normalize(tail)) ? "" : tail;
-    return { finals, interim: this.#pending };
+    // No prefix overlap: the snapshot scrolled past everything we have, or its
+    // start was revised. Treat the whole snapshot as the live region — we must
+    // NOT try to guess an anchor from a single (often common) word, or we'd drop
+    // the start of new speech. Duplicate *finals* are still blocked by #seen.
+    return snapWords.join(" ");
   }
 }
 

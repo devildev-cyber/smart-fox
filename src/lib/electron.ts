@@ -6,6 +6,7 @@ export interface ElectronAPI {
   minimize: () => void;
   close: () => void;
   togglePin: () => Promise<boolean>;
+  cycleOpacity: () => Promise<number>;
   onGenerate: (callback: () => void) => () => void;
   liveCaptions: {
     start: () => void;

@@ -66,6 +66,7 @@ export interface TurnDto {
   questionType: string;
   generatedAnswer: string;
   answerMode: string;
+  interviewStage: string;
   keywords: string[];
   confidence: string;
   riskNote: string;

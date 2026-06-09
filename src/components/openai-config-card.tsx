@@ -300,20 +300,20 @@ export function OpenAiConfigCard({
           {!models ? (
             <p className="text-xs text-muted-foreground">
               Save a key, then “Test &amp; load models” to pick the best models your key can
-              access. Current: <code>{status?.strongModel ?? "—"}</code> /{" "}
+              access. Analysis: <code>{status?.strongModel ?? "—"}</code> · Live answer:{" "}
               <code>{status?.fastModel ?? "—"}</code>.
             </p>
           ) : (
             <div className="grid gap-3 sm:grid-cols-3">
               <ModelSelect
-                label="Answer model (best quality)"
+                label="Analysis model (resume, JD, stories)"
                 value={strong}
                 onChange={setStrong}
                 options={models.chatModels}
                 recommended={models.recommendedStrong}
               />
               <ModelSelect
-                label="Detection model (fast)"
+                label="Live answer model"
                 value={fast}
                 onChange={setFast}
                 options={models.chatModels}

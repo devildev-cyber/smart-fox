@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   minimize: () => ipcRenderer.send("win:minimize"),
   close: () => ipcRenderer.send("win:close"),
   togglePin: () => ipcRenderer.invoke("win:toggle-pin"),
+  cycleOpacity: () => ipcRenderer.invoke("win:cycle-opacity"),
   // Subscribe to the global "generate" hotkey. Returns an unsubscribe fn.
   onGenerate: (callback) => {
     const handler = () => callback();

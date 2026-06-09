@@ -26,8 +26,19 @@ import {
 import { OpenAiConfigCard } from "@/components/openai-config-card";
 import { apiFetch } from "@/lib/client";
 import { useSettings } from "@/hooks/use-settings";
-import { ANSWER_MODE_LABELS, STT_LANGUAGES } from "@/lib/constants";
-import { answerModeSchema, type AnswerMode } from "@/lib/schemas";
+import {
+  ANSWER_MODE_LABELS,
+  ANSWER_FONT_SIZE_LABELS,
+  INTERVIEW_STAGE_LABELS,
+  STT_LANGUAGES,
+  type AnswerFontSize,
+} from "@/lib/constants";
+import {
+  answerModeSchema,
+  interviewStageSchema,
+  type AnswerMode,
+  type InterviewStage,
+} from "@/lib/schemas";
 import type { ConfigStatus } from "@/lib/types";
 
 export default function SettingsPage() {
@@ -143,6 +154,50 @@ export default function SettingsPage() {
               </Select>
             </div>
             <div className="space-y-1.5">
+              <Label>Default interview stage</Label>
+              <Select
+                value={settings.defaultInterviewStage}
+                onValueChange={(v) =>
+                  update({ defaultInterviewStage: v as InterviewStage })
+                }
+                disabled={!hydrated}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {interviewStageSchema.options.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {INTERVIEW_STAGE_LABELS[s]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Answer text size</Label>
+              <Select
+                value={settings.answerFontSize}
+                onValueChange={(v) =>
+                  update({ answerFontSize: v as AnswerFontSize })
+                }
+                disabled={!hydrated}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(
+                    Object.keys(ANSWER_FONT_SIZE_LABELS) as AnswerFontSize[]
+                  ).map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {ANSWER_FONT_SIZE_LABELS[s]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
               <Label htmlFor="max-sentences">Max answer sentences</Label>
               <Input
                 id="max-sentences"
@@ -177,6 +232,31 @@ export default function SettingsPage() {
                 }
                 disabled={!hydrated}
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="end-of-turn">Answer after pause (seconds)</Label>
+              <Input
+                id="end-of-turn"
+                type="number"
+                min={0.5}
+                max={5}
+                step={0.1}
+                value={settings.endOfTurnSeconds}
+                onChange={(e) =>
+                  update({
+                    endOfTurnSeconds: clamp(
+                      parseFloat(e.target.value) || 1.8,
+                      0.5,
+                      5
+                    ),
+                  })
+                }
+                disabled={!hydrated}
+              />
+              <p className="text-xs text-muted-foreground">
+                How long the interviewer pauses before we mark the turn ready /
+                auto-answer. Higher avoids cutting them off mid-question.
+              </p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="stt-segment">Transcription segment (seconds)</Label>

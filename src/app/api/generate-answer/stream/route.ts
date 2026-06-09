@@ -39,6 +39,7 @@ export async function POST(request: Request) {
     job,
     stories,
     answerMode: data.answerMode,
+    interviewStage: data.interviewStage,
     maxSentences: data.maxSentences,
     boldKeywords: data.boldKeywords,
     rawResumeFallback: candidate ? undefined : rawResumeText || undefined,

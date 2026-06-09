@@ -43,6 +43,9 @@ let mainWindow = null;
 /** @type {import("child_process").ChildProcess | null} */
 let serverProcess = null;
 let pinned = true;
+// Window opacity, cycled from the titlebar. 1 = opaque.
+const OPACITY_STEPS = [1, 0.9, 0.8, 0.7, 0.6];
+let currentOpacity = 0.9;
 
 // Append diagnostics to log files so packaged runs are debuggable (the GUI
 // process has no attached console). Written to both userData and the temp dir
@@ -154,10 +157,10 @@ async function ensureServer() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 460,
-    height: 760,
-    minWidth: 360,
-    minHeight: 480,
+    width: 400,
+    height: 600,
+    minWidth: 300,
+    minHeight: 380,
     frame: false,
     show: false,
     alwaysOnTop: true,
@@ -171,6 +174,9 @@ function createWindow() {
   });
 
   mainWindow.setAlwaysOnTop(true, "screen-saver");
+  // Start slightly translucent so it blends over the call. Adjustable from the
+  // titlebar.
+  mainWindow.setOpacity(currentOpacity);
   if (process.platform !== "win32") {
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   }
@@ -239,6 +245,14 @@ ipcMain.handle("win:toggle-pin", () => {
   pinned = !pinned;
   mainWindow?.setAlwaysOnTop(pinned, "screen-saver");
   return pinned;
+});
+
+// Cycle the overlay opacity (1 -> 0.9 -> ... -> 0.6 -> 1). Returns the new value.
+ipcMain.handle("win:cycle-opacity", () => {
+  const idx = OPACITY_STEPS.findIndex((v) => Math.abs(v - currentOpacity) < 0.01);
+  currentOpacity = OPACITY_STEPS[(idx + 1) % OPACITY_STEPS.length];
+  mainWindow?.setOpacity(currentOpacity);
+  return currentOpacity;
 });
 
 /* --------------------- Windows Live Captions bridge --------------------- */

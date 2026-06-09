@@ -42,6 +42,7 @@ export async function GET(
         questionType: t.questionType,
         generatedAnswer: t.generatedAnswer,
         answerMode: t.answerMode,
+        interviewStage: t.interviewStage,
         keywords: safeJsonParse<string[]>(t.keywordsJson, []),
         confidence: t.confidence,
         riskNote: t.riskNote,

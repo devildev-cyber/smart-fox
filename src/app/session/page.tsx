@@ -52,11 +52,9 @@ import {
 // bridge (desktop app only).
 type CaptureChoice = CaptureSource | "livecaption";
 
-// How long the interviewer must pause (no new captions) before we treat it as
-// the end of their turn — the moment to answer. Works for questions and for
-// prompts that don't end in "?" ("Tell me about a time you led a project").
-const END_OF_TURN_MS = 1100;
-import type { AnswerMode } from "@/lib/schemas";
+import type { AnswerMode, InterviewStage } from "@/lib/schemas";
+import { INTERVIEW_STAGE_LABELS, INTERVIEW_STAGE_HINTS } from "@/lib/constants";
+import { interviewStageSchema } from "@/lib/schemas";
 import type {
   ConfigStatus,
   AnswerResult,
@@ -64,6 +62,18 @@ import type {
   CandidateProfileDto,
   JobProfileDto,
 } from "@/lib/session-types";
+
+// Static class strings so Tailwind keeps them; maps the answer-size setting.
+const ANSWER_FONT_SIZE_CLASS = {
+  sm: "text-sm",
+  base: "text-base",
+  lg: "text-lg",
+  xl: "text-xl",
+} as const;
+
+// Cap retained final chunks so the transcript doesn't grow without bound (which
+// forced manual clearing). The answer model already uses a time-windowed slice.
+const MAX_FINALS = 80;
 
 interface FinalChunk {
   text: string;
@@ -100,6 +110,8 @@ export default function SessionPage() {
   const [answer, setAnswer] = React.useState<AnswerResult | null>(null);
   const [generating, setGenerating] = React.useState(false);
   const [lastMode, setLastMode] = React.useState<AnswerMode>("default");
+  const [interviewStage, setInterviewStage] =
+    React.useState<InterviewStage>("general");
   const [autoAnswer, setAutoAnswer] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   // Readiness signal so you know exactly when to press Generate.
@@ -134,6 +146,7 @@ export default function SessionPage() {
     if (hydrated) {
       setAutoAnswer(settings.autoAnswer);
       setLastMode(settings.defaultAnswerMode);
+      setInterviewStage(settings.defaultInterviewStage);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated]);
@@ -275,6 +288,7 @@ export default function SessionPage() {
             detectedQuestion: question,
             questionType,
             answerMode: mode,
+            interviewStage,
             maxSentences: settings.maxSentences,
             boldKeywords: settings.boldKeywords,
             priorTurns: priorTurnsRef.current,
@@ -297,7 +311,7 @@ export default function SessionPage() {
         });
       }
     },
-    [candidateId, jobId, questionType, recentForAnswer, settings, streamAnswer, pushPriorTurn]
+    [candidateId, jobId, questionType, interviewStage, recentForAnswer, settings, streamAnswer, pushPriorTurn]
   );
 
   const rewrite = React.useCallback(
@@ -316,6 +330,7 @@ export default function SessionPage() {
             detectedQuestion: baseQuestion || answer.answer.slice(0, 80),
             answer: answer.answer,
             answerMode: mode,
+            interviewStage,
             candidateProfileId: candidateId || undefined,
             jobProfileId: jobId || undefined,
             maxSentences: settings.maxSentences,
@@ -329,19 +344,30 @@ export default function SessionPage() {
         });
       }
     },
-    [answer, generate, candidateId, jobId, settings, streamAnswer]
+    [answer, generate, candidateId, jobId, interviewStage, settings, streamAnswer]
   );
 
   /* --------------------------- Live transcript --------------------------- */
 
   const handleTranscript = React.useCallback((text: string, isFinal: boolean) => {
     if (isFinal) {
-      setFinals((prev) => [...prev, { text, at: Date.now() }]);
+      if (!text.trim()) return;
+      setFinals((prev) => {
+        const next = [...prev, { text, at: Date.now() }];
+        return next.length > MAX_FINALS ? next.slice(-MAX_FINALS) : next;
+      });
       setInterim("");
     } else {
       setInterim(text);
     }
   }, []);
+
+  // Keep the transcript scrolled to the newest line.
+  const transcriptScrollRef = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    const el = transcriptScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [finals, interim]);
 
   const [captureSource, setCaptureSource] = React.useState<CaptureChoice>("microphone");
 
@@ -419,6 +445,13 @@ export default function SessionPage() {
   // End-of-turn detection: any new speech (final or interim) resets a short
   // timer. When the interviewer pauses, the timer fires — that's the moment to
   // answer. No "?" required, and no separate detection call on the hot path.
+  // How long the interviewer must pause (no new captions) before we treat it as
+  // the end of their turn — the moment to answer. Works for questions and for
+  // prompts that don't end in "?" ("Tell me about a time you led a project").
+  const endOfTurnMs = Math.round(
+    Math.max(0.5, settings.endOfTurnSeconds || 1.8) * 1000
+  );
+
   React.useEffect(() => {
     if (!isRecording) return;
     // They're talking again, so it's not the moment yet.
@@ -426,12 +459,12 @@ export default function SessionPage() {
     if (endOfTurnTimer.current) clearTimeout(endOfTurnTimer.current);
     endOfTurnTimer.current = setTimeout(
       () => handleEndOfTurnRef.current(),
-      END_OF_TURN_MS
+      endOfTurnMs
     );
     return () => {
       if (endOfTurnTimer.current) clearTimeout(endOfTurnTimer.current);
     };
-  }, [finals, interim, isRecording]);
+  }, [finals, interim, isRecording, endOfTurnMs]);
 
   const addManualCaption = () => {
     const text = manualCaption.trim();
@@ -489,6 +522,7 @@ export default function SessionPage() {
           questionType,
           generatedAnswer: answer.answer,
           answerMode: lastMode,
+          interviewStage,
           keywords: answer.keywords,
           confidence: answer.confidence,
           riskNote: answer.risk_note,
@@ -510,7 +544,7 @@ export default function SessionPage() {
     } finally {
       setSaving(false);
     }
-  }, [answer, ensureSession, recentTranscript, questionType, lastMode]);
+  }, [answer, ensureSession, recentTranscript, questionType, lastMode, interviewStage]);
 
   /* --------------------------- Keyboard shortcuts --------------------------- */
 
@@ -746,7 +780,10 @@ export default function SessionPage() {
                   }
                 />
               )}
-              <div className="h-44 overflow-y-auto rounded-md border border-border bg-background/50 p-3 text-sm leading-relaxed scrollbar-thin">
+              <div
+                ref={transcriptScrollRef}
+                className="h-44 overflow-y-auto rounded-md border border-border bg-background/50 p-3 text-sm leading-relaxed scrollbar-thin"
+              >
                 {finals.length === 0 && !interim ? (
                   <span className="text-muted-foreground">
                     Transcript will appear here…
@@ -830,13 +867,17 @@ export default function SessionPage() {
                   <span className="text-foreground">{answer.detected_question}</span>
                 </p>
               )}
-              <div className="min-h-[140px] rounded-md bg-secondary/40 p-4 text-xl leading-relaxed">
+              <div
+                className={`min-h-[120px] rounded-md bg-secondary/40 p-3 leading-relaxed ${
+                  ANSWER_FONT_SIZE_CLASS[settings.answerFontSize] ?? "text-base"
+                }`}
+              >
                 {answer && answer.answer ? (
                   <RichAnswer text={answer.answer} />
                 ) : generating ? (
                   <GeneratingState />
                 ) : (
-                  <span className="text-base text-muted-foreground">
+                  <span className="text-sm text-muted-foreground">
                     Generate an answer with ⌘/Ctrl + Enter, or the buttons below.
                   </span>
                 )}
@@ -886,6 +927,24 @@ export default function SessionPage() {
               </label>
             </CardHeader>
             <CardContent className="space-y-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Interview stage</Label>
+                <Select
+                  value={interviewStage}
+                  onValueChange={(v) => setInterviewStage(v as InterviewStage)}
+                >
+                  <SelectTrigger className="h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {interviewStageSchema.options.map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {INTERVIEW_STAGE_LABELS[s]} — {INTERVIEW_STAGE_HINTS[s]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="flex flex-wrap gap-2">
                 <Button
                   onClick={() => void generate(settings.defaultAnswerMode)}

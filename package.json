@@ -1,6 +1,6 @@
 {
   "name": "interview-coach",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "private": true,
   "description": "Local-first real-time interview assistant for personal interview preparation and permitted live coaching.",
   "author": "Interview Coach",

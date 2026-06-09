@@ -28,6 +28,18 @@ export const answerModeSchema = z.enum([
 ]);
 export type AnswerMode = z.infer<typeof answerModeSchema>;
 
+// Which interview round we're in. Sets the overall depth + tone calibration for
+// every answer in the session (recruiter screens stay light, technical rounds go
+// deep, culture chats stay casual). Separate from the per-answer answerMode.
+export const interviewStageSchema = z.enum([
+  "general",
+  "recruiter_hr",
+  "behavioral",
+  "technical",
+  "culture_fit",
+]);
+export type InterviewStage = z.infer<typeof interviewStageSchema>;
+
 export const storyCategorySchema = z.enum([
   "tell_me_about_yourself",
   "backend_experience",
@@ -171,6 +183,7 @@ export const generateAnswerRequestSchema = z
     detectedQuestion: z.string().default(""),
     questionType: questionTypeSchema.optional(),
     answerMode: answerModeSchema.default("default"),
+    interviewStage: interviewStageSchema.default("general"),
     maxSentences: z.number().int().min(1).max(8).default(4),
     boldKeywords: z.boolean().default(false),
     // Prior answered turns this session, so the model can reference instead of repeat.
@@ -184,6 +197,7 @@ export const rewriteAnswerRequestSchema = z.object({
   detectedQuestion: z.string().min(1),
   answer: z.string().min(1, "An existing answer is required"),
   answerMode: answerModeSchema,
+  interviewStage: interviewStageSchema.default("general"),
   candidateProfileId: z.string().optional(),
   jobProfileId: z.string().optional(),
   maxSentences: z.number().int().min(1).max(8).default(4),
@@ -225,6 +239,7 @@ export const turnInputSchema = z.object({
   questionType: z.string().default("other"),
   generatedAnswer: z.string().default(""),
   answerMode: z.string().default("default"),
+  interviewStage: z.string().default("general"),
   keywords: z.array(z.string()).default([]),
   confidence: z.string().default("medium"),
   riskNote: z.string().default(""),

@@ -34,6 +34,7 @@ export async function POST(request: Request) {
     detectedQuestion: data.detectedQuestion,
     answer: data.answer,
     answerMode: data.answerMode,
+    interviewStage: data.interviewStage,
     candidate,
     job,
     maxSentences: data.maxSentences,

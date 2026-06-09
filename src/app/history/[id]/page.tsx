@@ -27,7 +27,11 @@ import { FieldChips } from "@/components/field-list";
 import { RichAnswer } from "@/components/rich-answer";
 import { apiFetch } from "@/lib/client";
 import { formatDate } from "@/lib/utils";
-import { ANSWER_MODE_LABELS, QUESTION_TYPE_LABELS } from "@/lib/constants";
+import {
+  ANSWER_MODE_LABELS,
+  INTERVIEW_STAGE_LABELS,
+  QUESTION_TYPE_LABELS,
+} from "@/lib/constants";
 import type { SessionDetail, TurnDto } from "@/lib/types";
 import type { PostInterviewReview } from "@/lib/schemas";
 
@@ -199,6 +203,13 @@ function TurnCard({ turn, index }: { turn: TurnDto; index: number }) {
     <div className="rounded-md border border-border p-4">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className="text-xs font-medium text-muted-foreground">Q{index + 1}</span>
+        {turn.interviewStage && turn.interviewStage !== "general" && (
+          <Badge variant="outline" className="font-normal">
+            {INTERVIEW_STAGE_LABELS[
+              turn.interviewStage as keyof typeof INTERVIEW_STAGE_LABELS
+            ] ?? turn.interviewStage}
+          </Badge>
+        )}
         <Badge variant="outline" className="font-normal">
           {QUESTION_TYPE_LABELS[turn.questionType as keyof typeof QUESTION_TYPE_LABELS] ??
             turn.questionType}
@@ -316,7 +327,9 @@ function buildMarkdown(session: SessionDetail, review: PostInterviewReview | nul
   session.turns.forEach((turn, i) => {
     lines.push("");
     lines.push(`### Q${i + 1}: ${turn.detectedQuestion}`);
-    lines.push(`- Type: ${turn.questionType} · Mode: ${turn.answerMode} · Confidence: ${turn.confidence}`);
+    lines.push(
+      `- Stage: ${turn.interviewStage} · Type: ${turn.questionType} · Mode: ${turn.answerMode} · Confidence: ${turn.confidence}`
+    );
     lines.push("");
     lines.push(turn.generatedAnswer);
     if (turn.keywords.length) lines.push(`\n_Keywords: ${turn.keywords.join(", ")}_`);

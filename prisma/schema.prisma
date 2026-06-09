@@ -72,6 +72,7 @@ model InterviewTurn {
   questionType    String
   generatedAnswer String
   answerMode      String
+  interviewStage  String           @default("general")
   keywordsJson    String
   confidence      String
   riskNote        String
