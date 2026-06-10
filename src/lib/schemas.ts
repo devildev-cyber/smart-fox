@@ -1,5 +1,44 @@
 import { z } from "zod";
 
+/* ----------------------------- Helpers ----------------------------- */
+
+/**
+ * Flatten one array item into a readable string. Verbose models (e.g. gpt-5.5)
+ * often return objects like {name, role, duration} where we expect a plain
+ * string, which would otherwise fail schema validation. Strings pass through;
+ * objects are reduced to a sensible label; nullish items are dropped later.
+ */
+function itemToLabel(item: unknown): string {
+  if (item == null) return "";
+  if (typeof item === "string") return item.trim();
+  if (typeof item === "number" || typeof item === "boolean") return String(item);
+  if (typeof item === "object") {
+    const o = item as Record<string, unknown>;
+    const pick = (keys: string[]) =>
+      keys
+        .map((k) => o[k])
+        .filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+    const head = pick(["name", "company", "title", "project", "skill", "label", "text", "value"])[0];
+    const detail = pick(["role", "position", "duration", "period", "years", "description", "summary"]);
+    const parts = [head, ...detail].filter(Boolean);
+    if (parts.length) return parts.join(" — ");
+    const anyStrings = Object.values(o).filter(
+      (v): v is string => typeof v === "string" && v.trim().length > 0
+    );
+    return anyStrings.join(" — ");
+  }
+  return String(item);
+}
+
+/**
+ * A string[] field that tolerates a model returning objects, a single value,
+ * or null instead of a clean array of strings. Always yields string[].
+ */
+const looseStringArray = z.any().transform((val): string[] => {
+  const arr = Array.isArray(val) ? val : val == null ? [] : [val];
+  return arr.map(itemToLabel).filter((s) => s.length > 0);
+});
+
 /* ----------------------------- Shared enums ----------------------------- */
 
 export const questionTypeSchema = z.enum([
@@ -67,17 +106,17 @@ export const STORY_CATEGORIES: StoryCategory[] = storyCategorySchema.options;
 export const candidateStructuredSchema = z.object({
   name: z.string().default(""),
   seniority: z.string().default(""),
-  target_titles: z.array(z.string()).default([]),
-  core_stack: z.array(z.string()).default([]),
-  secondary_stack: z.array(z.string()).default([]),
-  domains: z.array(z.string()).default([]),
-  companies: z.array(z.string()).default([]),
-  projects: z.array(z.string()).default([]),
-  metrics: z.array(z.string()).default([]),
-  leadership: z.array(z.string()).default([]),
-  strong_evidence: z.array(z.string()).default([]),
-  weak_or_missing_evidence: z.array(z.string()).default([]),
-  best_story_angles: z.array(z.string()).default([]),
+  target_titles: looseStringArray,
+  core_stack: looseStringArray,
+  secondary_stack: looseStringArray,
+  domains: looseStringArray,
+  companies: looseStringArray,
+  projects: looseStringArray,
+  metrics: looseStringArray,
+  leadership: looseStringArray,
+  strong_evidence: looseStringArray,
+  weak_or_missing_evidence: looseStringArray,
+  best_story_angles: looseStringArray,
 });
 export type CandidateStructured = z.infer<typeof candidateStructuredSchema>;
 
@@ -85,13 +124,13 @@ export const jobStructuredSchema = z.object({
   company: z.string().default(""),
   role_title: z.string().default(""),
   seniority: z.string().default(""),
-  must_have_skills: z.array(z.string()).default([]),
-  preferred_skills: z.array(z.string()).default([]),
+  must_have_skills: looseStringArray,
+  preferred_skills: looseStringArray,
   domain: z.string().default(""),
-  responsibilities: z.array(z.string()).default([]),
-  likely_interview_focus: z.array(z.string()).default([]),
-  likely_questions: z.array(z.string()).default([]),
-  resume_match_keywords: z.array(z.string()).default([]),
+  responsibilities: looseStringArray,
+  likely_interview_focus: looseStringArray,
+  likely_questions: looseStringArray,
+  resume_match_keywords: looseStringArray,
 });
 export type JobStructured = z.infer<typeof jobStructuredSchema>;
 
@@ -133,8 +172,8 @@ export const generatedStorySchema = z.object({
   short_version: z.string(),
   star_version: z.string(),
   technical_version: z.string(),
-  keywords: z.array(z.string()).default([]),
-  evidence: z.array(z.string()).default([]),
+  keywords: looseStringArray,
+  evidence: looseStringArray,
 });
 export type GeneratedStory = z.infer<typeof generatedStorySchema>;
 

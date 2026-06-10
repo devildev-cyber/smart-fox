@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   MonitorSpeaker,
   Info,
+  ChevronRight,
 } from "lucide-react";
 import {
   Card,
@@ -75,14 +76,28 @@ const ANSWER_FONT_SIZE_CLASS = {
 // forced manual clearing). The answer model already uses a time-windowed slice.
 const MAX_FINALS = 80;
 
+// Cap the in-session answer log so it doesn't grow without bound.
+const MAX_LOG = 40;
+
 interface FinalChunk {
   text: string;
   at: number;
+  // Monotonic id so we can mark "answered up to here" even after old chunks are
+  // pruned (array indices shift on prune; seq does not).
+  seq: number;
 }
 
 interface PriorTurnState {
   question: string;
   answerGist: string;
+}
+
+interface LogEntry {
+  id: string;
+  question: string;
+  answer: string;
+  confidence: string;
+  at: number;
 }
 
 export default function SessionPage() {
@@ -117,6 +132,8 @@ export default function SessionPage() {
   // Readiness signal so you know exactly when to press Generate.
   const [questionReady, setQuestionReady] = React.useState(false);
   const [readyConfidence, setReadyConfidence] = React.useState<string>("medium");
+  // In-session log of generated Q/A turns (newest first), collapsible for reference.
+  const [log, setLog] = React.useState<LogEntry[]>([]);
 
   // Refs to avoid stale closures in async/debounced handlers.
   const finalsRef = React.useRef<FinalChunk[]>([]);
@@ -125,8 +142,17 @@ export default function SessionPage() {
   const lastAnsweredRef = React.useRef("");
   // End-of-turn (pause) detection for the live answer flow.
   const endOfTurnTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const autoAnsweredRef = React.useRef("");
   const handleEndOfTurnRef = React.useRef<() => void>(() => {});
+  // Monotonic sequence for final chunks, and the marker of the last chunk we've
+  // already answered (so Generate sends only what's new). prevConsumedSeqRef
+  // keeps the value from before the last answer, so a mis-click is recoverable
+  // via Regenerate (which reads a wider window and ignores the marker).
+  const seqRef = React.useRef(0);
+  const consumedSeqRef = React.useRef(0);
+  const prevConsumedSeqRef = React.useRef(0);
+  // The interim text we last answered. When Live Captions finalizes it into a
+  // final chunk afterward, we strip that overlap so it isn't answered twice.
+  const consumedInterimRef = React.useRef("");
   // Streaming + session memory.
   const streamAbort = React.useRef<AbortController | null>(null);
   const priorTurnsRef = React.useRef<PriorTurnState[]>([]);
@@ -202,6 +228,46 @@ export default function SessionPage() {
     ].slice(-8);
   }, []);
 
+  const appendLog = React.useCallback((result: AnswerResult) => {
+    setLog((prev) => {
+      const entry: LogEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        question: result.detected_question.trim() || "(question inferred)",
+        answer: result.answer,
+        confidence: result.confidence,
+        at: Date.now(),
+      };
+      const next = [entry, ...prev];
+      return next.length > MAX_LOG ? next.slice(0, MAX_LOG) : next;
+    });
+  }, []);
+
+  /* ----------------------------- Delta input ----------------------------- */
+
+  // What to answer next: only the speech that's new since the last answer, plus
+  // a couple of sentences of overlap for context. This is the core fix for
+  // "question detection is bad / scripts duplicated" — we stop re-feeding the
+  // whole rolling window on every Generate.
+  const buildDelta = React.useCallback(() => {
+    const all = finalsRef.current;
+    const fresh = all.filter((f) => f.seq > consumedSeqRef.current);
+    let newText = [...fresh.map((f) => f.text), interimRef.current]
+      .join(" ")
+      .trim();
+    if (consumedInterimRef.current) {
+      newText = stripLeadingOverlap(newText, consumedInterimRef.current);
+    }
+    const consumedText = all
+      .filter((f) => f.seq <= consumedSeqRef.current)
+      .map((f) => f.text)
+      .join(" ");
+    const context = lastSentences(consumedText, 2);
+    const maxSeq = fresh.length
+      ? fresh[fresh.length - 1].seq
+      : consumedSeqRef.current;
+    return { newText, context, maxSeq };
+  }, []);
+
   /* --------------------------- Generation --------------------------- */
 
   // Shared streaming driver for both Generate and Rewrite. Seeds an empty
@@ -266,11 +332,46 @@ export default function SessionPage() {
   );
 
   const generate = React.useCallback(
-    async (mode: AnswerMode, questionOverride?: string) => {
-      const question = (questionOverride ?? detectedRef.current).trim();
-      const transcript = recentForAnswer();
-      // One-shot: with no explicit question, the model infers it from the
-      // transcript and answers in a single streaming call.
+    async (
+      mode: AnswerMode,
+      opts: { override?: string; wide?: boolean; auto?: boolean } = {}
+    ) => {
+      const question = (opts.override ?? detectedRef.current).trim();
+
+      // Decide what transcript text to send, and whether to advance the marker.
+      let transcript = "";
+      let advanceTo: number | null = null;
+      // Interim snapshot at the moment we build the delta, committed on success
+      // so the next delta can strip it once it finalizes.
+      let interimSnapshot = "";
+
+      if (question) {
+        // Explicit typed question: answer it with recent context. Marker is
+        // out-of-band here, so we leave it untouched.
+        transcript = recentForAnswer();
+      } else if (opts.wide) {
+        // Regenerate / recovery: re-read a wider window and ignore the marker so
+        // a wrong boundary or mis-click can be corrected.
+        transcript = lastSentences(recentTranscript(), 8);
+      } else {
+        // Normal flow: answer only what's new since the last answer (+overlap).
+        const { newText, context, maxSeq } = buildDelta();
+        if (newText) {
+          transcript = context
+            ? `(earlier) ${context}\n(now) ${newText}`
+            : newText;
+          advanceTo = maxSeq;
+          interimSnapshot = interimRef.current.trim();
+        } else if (opts.auto) {
+          // Auto-answer with nothing new to say: do nothing (no re-answering).
+          return;
+        } else {
+          // Manual click with nothing new: best-effort answer of the recent
+          // window. Harmless, and the marker is left alone.
+          transcript = recentForAnswer();
+        }
+      }
+
       if (!question && !transcript) {
         toast.error("Nothing to answer yet", {
           description: "Record/paste some transcript, or type a question.",
@@ -296,14 +397,20 @@ export default function SessionPage() {
           question
         );
         if (!result) return; // superseded by a newer generate
+        // Advance the consumed marker only when we actually answered a fresh
+        // delta, so the next Generate won't re-answer this text.
+        if (advanceTo !== null) {
+          prevConsumedSeqRef.current = consumedSeqRef.current;
+          consumedSeqRef.current = advanceTo;
+          consumedInterimRef.current = interimSnapshot;
+        }
         // NOTE: never write the inferred question back into the override box —
         // doing so makes it "stick" and forces every later answer onto a stale
         // question. The box only ever holds what the user types.
         const answered = result.detected_question.trim() || question;
         lastAnsweredRef.current = answered;
         pushPriorTurn(answered, result.answer);
-        // Mark this transcript as handled so end-of-turn auto-answer won't re-fire it.
-        autoAnsweredRef.current = recentForAnswer().replace(/\s+/g, " ").trim();
+        appendLog(result);
         setQuestionReady(false);
       } catch (err) {
         toast.error("Could not generate answer", {
@@ -311,7 +418,19 @@ export default function SessionPage() {
         });
       }
     },
-    [candidateId, jobId, questionType, interviewStage, recentForAnswer, settings, streamAnswer, pushPriorTurn]
+    [
+      candidateId,
+      jobId,
+      questionType,
+      interviewStage,
+      recentForAnswer,
+      recentTranscript,
+      buildDelta,
+      settings,
+      streamAnswer,
+      pushPriorTurn,
+      appendLog,
+    ]
   );
 
   const rewrite = React.useCallback(
@@ -353,7 +472,7 @@ export default function SessionPage() {
     if (isFinal) {
       if (!text.trim()) return;
       setFinals((prev) => {
-        const next = [...prev, { text, at: Date.now() }];
+        const next = [...prev, { text, at: Date.now(), seq: ++seqRef.current }];
         return next.length > MAX_FINALS ? next.slice(-MAX_FINALS) : next;
       });
       setInterim("");
@@ -469,7 +588,7 @@ export default function SessionPage() {
   const addManualCaption = () => {
     const text = manualCaption.trim();
     if (!text) return;
-    setFinals((prev) => [...prev, { text, at: Date.now() }]);
+    setFinals((prev) => [...prev, { text, at: Date.now(), seq: ++seqRef.current }]);
     setManualCaption("");
   };
 
@@ -478,7 +597,10 @@ export default function SessionPage() {
     setInterim("");
     finalsRef.current = [];
     interimRef.current = "";
-    autoAnsweredRef.current = "";
+    seqRef.current = 0;
+    consumedSeqRef.current = 0;
+    prevConsumedSeqRef.current = 0;
+    consumedInterimRef.current = "";
     lastAnsweredRef.current = "";
     priorTurnsRef.current = [];
     setQuestionReady(false);
@@ -564,13 +686,11 @@ export default function SessionPage() {
   // signals that now is a good time to press Generate — no LLM call, no waiting.
   handleEndOfTurnRef.current = () => {
     if (generatingRef.current) return;
-    const transcript = recentForAnswer();
-    if (!transcript) return;
+    // Only react when there's genuinely new speech since the last answer.
+    const { newText } = buildDelta();
+    if (!newText) return;
     if (autoAnswerRef.current) {
-      const norm = transcript.replace(/\s+/g, " ").trim();
-      if (norm === autoAnsweredRef.current) return;
-      autoAnsweredRef.current = norm;
-      void generateRef.current(lastModeRef.current);
+      void generateRef.current(lastModeRef.current, { auto: true });
     } else {
       setReadyConfidence("");
       setQuestionReady(true);
@@ -600,7 +720,7 @@ export default function SessionPage() {
           void rewriteRef.current("human");
         } else if (key === "r") {
           e.preventDefault();
-          void generateRef.current(lastModeRef.current);
+          void generateRef.current(lastModeRef.current, { wide: true });
         }
       }
     };
@@ -620,11 +740,11 @@ export default function SessionPage() {
   const openaiMissing = config && !config.openaiConfigured;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Live session</h1>
+          <h1 className="text-xl font-bold tracking-tight">Live session</h1>
           <p className="text-sm text-muted-foreground">
             Capture the interviewer and stream a spoken answer in real time.
           </p>
@@ -694,9 +814,9 @@ export default function SessionPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-2">
         {/* Left panel */}
-        <div className="space-y-5">
+        <div className="space-y-4">
           <Card>
             <CardHeader className="flex-row items-center justify-between space-y-0">
               <CardTitle className="flex items-center gap-2 text-base">
@@ -840,7 +960,7 @@ export default function SessionPage() {
         </div>
 
         {/* Right panel */}
-        <div className="space-y-5">
+        <div className="space-y-4">
           <LiveStatus
             recording={isRecording}
             transcribing={openaiStt.processing}
@@ -856,19 +976,23 @@ export default function SessionPage() {
                 : "border-primary/30"
             }
           >
-            <CardHeader className="flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-base">Your answer</CardTitle>
+            <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
+              <CardTitle className="text-sm">Your answer</CardTitle>
               {answer && <ConfidenceBadge confidence={answer.confidence} />}
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               {answer?.detected_question && (
-                <p className="text-xs text-muted-foreground">
-                  Answering:{" "}
-                  <span className="text-foreground">{answer.detected_question}</span>
-                </p>
+                <div className="rounded-md border-l-2 border-primary/50 bg-secondary/30 px-3 py-1.5">
+                  <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Question
+                  </p>
+                  <p className="text-sm font-semibold leading-snug">
+                    {answer.detected_question}
+                  </p>
+                </div>
               )}
               <div
-                className={`min-h-[120px] rounded-md bg-secondary/40 p-3 leading-relaxed ${
+                className={`min-h-[96px] rounded-md bg-secondary/40 p-2.5 leading-relaxed ${
                   ANSWER_FONT_SIZE_CLASS[settings.answerFontSize] ?? "text-base"
                 }`}
               >
@@ -884,7 +1008,7 @@ export default function SessionPage() {
               </div>
 
               {answer && (
-                <div className="space-y-3 text-sm">
+                <div className="space-y-2 text-sm">
                   {answer.keywords.length > 0 && (
                     <div>
                       <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -978,7 +1102,7 @@ export default function SessionPage() {
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   variant="ghost"
-                  onClick={() => void generate(lastMode)}
+                  onClick={() => void generate(lastMode, { wide: true })}
                   disabled={generating}
                 >
                   <RefreshCw className="h-4 w-4" /> Regenerate
@@ -989,6 +1113,38 @@ export default function SessionPage() {
               </div>
             </CardContent>
           </Card>
+
+          {log.length > 0 && (
+            <Card>
+              <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm">Answer log ({log.length})</CardTitle>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setLog([])}
+                >
+                  Clear
+                </Button>
+              </CardHeader>
+              <CardContent className="max-h-72 space-y-1.5 overflow-y-auto">
+                {log.map((e) => (
+                  <details
+                    key={e.id}
+                    className="group rounded-md border border-border bg-secondary/20 px-2.5 py-1.5"
+                  >
+                    <summary className="flex cursor-pointer list-none items-center gap-2 text-xs [&::-webkit-details-marker]:hidden">
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                      <span className="line-clamp-1 font-medium">{e.question}</span>
+                    </summary>
+                    <div className="mt-1.5 border-t border-border pt-1.5 text-sm">
+                      <RichAnswer text={e.answer} />
+                    </div>
+                  </details>
+                ))}
+              </CardContent>
+            </Card>
+          )}
 
           <ShortcutHint />
         </div>
@@ -1025,6 +1181,21 @@ function lastSentences(text: string, n: number): string {
   const sentences = trimmed.match(/[^.!?]+[.!?]+|\S[^.!?]*$/g);
   if (!sentences || sentences.length <= n) return trimmed;
   return sentences.slice(-n).join(" ").trim();
+}
+
+// Remove the leading words of `text` that are already covered by `consumed` (a
+// previously answered interim that has since finalized into a final chunk).
+// Word-level longest common prefix on a normalized form, so Live Captions
+// revisions only cost a small partial overlap instead of a full re-answer.
+function stripLeadingOverlap(text: string, consumed: string): string {
+  const norm = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  const t = text.trim().split(/\s+/).filter(Boolean);
+  const c = consumed.trim().split(/\s+/).filter(Boolean);
+  if (t.length === 0 || c.length === 0) return text.trim();
+  let k = 0;
+  const max = Math.min(t.length, c.length);
+  while (k < max && norm(t[k]) === norm(c[k]) && norm(t[k]) !== "") k++;
+  return t.slice(k).join(" ");
 }
 
 function CaptureHint({
