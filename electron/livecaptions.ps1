@@ -6,6 +6,11 @@ Add-Type -AssemblyName UIAutomationTypes
 
 $ErrorActionPreference = 'SilentlyContinue'
 
+# Emit UTF-8 so non-ASCII captions (e.g. Chinese) survive the pipe to Electron.
+# (Windows PowerShell's ConvertTo-Json also \u-escapes non-ASCII, but this keeps
+# raw output correct too, e.g. under pwsh.)
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+
 $AutomationIdProperty = [System.Windows.Automation.AutomationElement]::AutomationIdProperty
 $Descendants = [System.Windows.Automation.TreeScope]::Descendants
 # The caption text lives in an element with AutomationId "CaptionsTextBlock".

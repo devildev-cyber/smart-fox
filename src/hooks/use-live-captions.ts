@@ -8,25 +8,52 @@ interface UseLiveCaptionsOptions {
 
 type LiveCaptionState = "idle" | "recording";
 
-// Split text into sentences, keeping a trailing unpunctuated fragment as its own
-// (in-progress) sentence.
+// CJK ideographs (main block + extension A + compatibility). Chinese/Japanese
+// text has no spaces, so we tokenize it per character for alignment.
+const CJK = /[\u3400-\u9fff\uf900-\ufaff]/;
+
+function isCjkChar(ch: string): boolean {
+  return Boolean(ch) && CJK.test(ch);
+}
+
+// Split into sentences on both ASCII and full-width CJK terminators, keeping a
+// trailing unpunctuated fragment as its own (in-progress) sentence.
 function splitSentences(text: string): string[] {
-  const matches = text.match(/[^.!?]+[.!?]+|\S[^.!?]*$/g);
+  const matches = text.match(/[^.!?。！？…]+[.!?。！？…]+|\S[^.!?。！？…]*$/gu);
   return matches ? matches.map((s) => s.trim()).filter(Boolean) : [];
 }
 
-function words(text: string): string[] {
-  return text.split(/\s+/).filter(Boolean);
+// Tokenize for alignment + reconstruction: each CJK character is its own token
+// (no spaces between them), while non-CJK text is split into whitespace-
+// separated words. Whitespace is dropped here; rebuild text with joinTokens.
+function tokenize(text: string): string[] {
+  return text.match(/[\u3400-\u9fff\uf900-\ufaff]|[^\s\u3400-\u9fff\uf900-\ufaff]+/g) ?? [];
 }
 
-// Match key for a word: lowercase, strip punctuation. Lets us align snapshots
-// even as Live Captions re-punctuates or re-cases the same words.
+// Rejoin tokens, inserting a space only between two non-CJK tokens so Chinese
+// stays contiguous ("你好") while English keeps its spacing ("how are you").
+function joinTokens(tokens: string[]): string {
+  let out = "";
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (i === 0) {
+      out = t;
+      continue;
+    }
+    const glue = isCjkChar(tokens[i - 1].slice(-1)) || isCjkChar(t[0]) ? "" : " ";
+    out += glue + t;
+  }
+  return out;
+}
+
+// Match key for a token: lowercase, strip punctuation. Unicode-aware so CJK
+// characters survive (the old [a-z0-9]-only form normalized them all to "").
 function normWord(w: string): string {
-  return w.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return w.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
 function sentenceKey(s: string): string {
-  return words(s).map(normWord).filter(Boolean).join(" ");
+  return tokenize(s).map(normWord).filter(Boolean).join(" ");
 }
 
 // Windows Live Captions exposes a single rolling window that it continuously
@@ -44,10 +71,20 @@ function sentenceKey(s: string): string {
 //      revisions simply replace the old guess (never duplicate it).
 //   3. Commit a sentence only once a LATER sentence has begun (so it can't still
 //      be revised), guarded by a normalized-text set as a final dedup backstop.
+// Tokens Live Captions may still revise — kept in the live region, never
+// committed until more arrives after them.
+const LIVE_MARGIN = 8;
+// Once the live region grows past this with no sentence break, commit its
+// stable prefix anyway. This is what makes Chinese work: Live Captions often
+// emits Chinese with no sentence punctuation, so the sentence-based commit
+// would otherwise never fire.
+const LIVE_MAX = 24;
+const TAIL_MAX = 80;
+
 class CaptionReconciler {
-  // Bounded list of committed words, kept only to align the next snapshot.
+  // Bounded list of committed tokens, kept only to align the next snapshot.
   #committedTail: string[] = [];
-  // Normalized text of every sentence already emitted — a hard dedup backstop.
+  // Normalized text of every fragment already emitted — a hard dedup backstop.
   #seen = new Set<string>();
   #live = "";
 
@@ -61,44 +98,56 @@ class CaptionReconciler {
     const snap = snapshot.replace(/\s+/g, " ").trim();
     if (!snap) return { finals: [], interim: this.#live };
 
-    const live = this.#alignLive(words(snap));
-    const sentences = splitSentences(live);
     const finals: string[] = [];
-    let interim = live;
+    let remaining = this.#alignLive(tokenize(snap));
 
+    // 1) Commit completed sentences: everything before the last sentence is
+    //    stable because a newer sentence has started after it.
+    const sentences = splitSentences(joinTokens(remaining));
     if (sentences.length > 1) {
-      // Everything before the last sentence is stable: a newer sentence has
-      // started after it, so Live Captions won't revise it anymore.
-      for (const sentence of sentences.slice(0, -1)) {
-        this.#committedTail.push(...words(sentence));
-        const key = sentenceKey(sentence);
-        if (key && !this.#seen.has(key)) {
-          this.#seen.add(key);
-          finals.push(sentence);
-        }
-      }
-      if (this.#committedTail.length > 80) {
-        this.#committedTail = this.#committedTail.slice(-80);
-      }
-      interim = sentences[sentences.length - 1];
+      for (const sentence of sentences.slice(0, -1)) this.#commit(sentence, finals);
+      remaining = tokenize(sentences[sentences.length - 1]);
     }
 
+    // 2) Punctuation-independent fallback: once the still-live region is long,
+    //    commit its stable prefix and keep a small revision margin live.
+    while (remaining.length > LIVE_MAX) {
+      const cut = remaining.length - LIVE_MARGIN;
+      this.#commit(joinTokens(remaining.slice(0, cut)), finals);
+      remaining = remaining.slice(cut);
+    }
+
+    const interim = joinTokens(remaining);
     this.#live = interim;
     return { finals, interim };
   }
 
+  #commit(text: string, finals: string[]) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    this.#committedTail.push(...tokenize(trimmed));
+    if (this.#committedTail.length > TAIL_MAX) {
+      this.#committedTail = this.#committedTail.slice(-TAIL_MAX);
+    }
+    const key = sentenceKey(trimmed);
+    if (key && !this.#seen.has(key)) {
+      this.#seen.add(key);
+      finals.push(trimmed);
+    }
+  }
+
   // Strip the part of the snapshot that overlaps the committed tail and return
-  // the remaining (live) words as text.
-  #alignLive(snapWords: string[]): string {
+  // the remaining (live) tokens.
+  #alignLive(snapTokens: string[]): string[] {
     const tail = this.#committedTail;
-    if (tail.length === 0) return snapWords.join(" ");
+    if (tail.length === 0) return snapTokens;
 
     const tailNorm = tail.map(normWord);
-    const snapNorm = snapWords.map(normWord);
+    const snapNorm = snapTokens.map(normWord);
 
     // Largest overlap where the END of the committed tail equals the START of
     // the snapshot (handles the window scrolling off the front).
-    const maxO = Math.min(tail.length, snapWords.length);
+    const maxO = Math.min(tail.length, snapTokens.length);
     for (let o = maxO; o >= 1; o--) {
       let ok = true;
       for (let i = 0; i < o; i++) {
@@ -107,14 +156,14 @@ class CaptionReconciler {
           break;
         }
       }
-      if (ok) return snapWords.slice(o).join(" ");
+      if (ok) return snapTokens.slice(o);
     }
 
     // No prefix overlap: the snapshot scrolled past everything we have, or its
     // start was revised. Treat the whole snapshot as the live region — we must
-    // NOT try to guess an anchor from a single (often common) word, or we'd drop
-    // the start of new speech. Duplicate *finals* are still blocked by #seen.
-    return snapWords.join(" ");
+    // NOT guess an anchor from a single (often common) token, or we'd drop the
+    // start of new speech. Duplicate *finals* are still blocked by #seen.
+    return snapTokens;
   }
 }
 
