@@ -1,4 +1,5 @@
 import type {
+  AnswerLanguage,
   AnswerMode,
   Confidence,
   InterviewStage,
@@ -97,6 +98,8 @@ export interface AppSettings {
   endOfTurnSeconds: number;
   /** On-screen size of the generated answer text. */
   answerFontSize: AnswerFontSize;
+  /** Language the generated answer is written in. "zh" adds per-character pinyin. */
+  answerLanguage: AnswerLanguage;
 }
 
 export type AnswerFontSize = "sm" | "base" | "lg" | "xl";
@@ -119,7 +122,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sttLanguage: "en",
   endOfTurnSeconds: 1.8,
   answerFontSize: "base",
+  answerLanguage: "en",
 };
+
+export const ANSWER_LANGUAGES: { value: AnswerLanguage; label: string }[] = [
+  { value: "en", label: "English" },
+  { value: "zh", label: "Chinese (with pinyin)" },
+];
 
 export const STT_LANGUAGES: { value: string; label: string }[] = [
   { value: "en", label: "English" },

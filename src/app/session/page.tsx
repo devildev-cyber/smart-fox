@@ -344,6 +344,8 @@ export default function SessionPage() {
       // Interim snapshot at the moment we build the delta, committed on success
       // so the next delta can strip it once it finalizes.
       let interimSnapshot = "";
+      // Raw text (no "(earlier)/(now)" markers) used to derive the focus hint.
+      let focusText = "";
 
       if (question) {
         // Explicit typed question: answer it with recent context. Marker is
@@ -353,6 +355,7 @@ export default function SessionPage() {
         // Regenerate / recovery: re-read a wider window and ignore the marker so
         // a wrong boundary or mis-click can be corrected.
         transcript = lastSentences(recentTranscript(), 8);
+        focusText = transcript;
       } else {
         // Normal flow: answer only what's new since the last answer (+overlap).
         const { newText, context, maxSeq } = buildDelta();
@@ -362,6 +365,7 @@ export default function SessionPage() {
             : newText;
           advanceTo = maxSeq;
           interimSnapshot = interimRef.current.trim();
+          focusText = newText;
         } else if (opts.auto) {
           // Auto-answer with nothing new to say: do nothing (no re-answering).
           return;
@@ -369,6 +373,7 @@ export default function SessionPage() {
           // Manual click with nothing new: best-effort answer of the recent
           // window. Harmless, and the marker is left alone.
           transcript = recentForAnswer();
+          focusText = transcript;
         }
       }
 
@@ -378,6 +383,10 @@ export default function SessionPage() {
         });
         return;
       }
+      // Soft steer toward the most recent ask. With an explicit typed question
+      // there's nothing to hint; otherwise point at the tail of what's new
+      // (derived from the raw text so the "(now)" marker never leaks in).
+      const focusHint = question ? "" : latestUtterance(focusText);
       setLastMode(mode);
       try {
         const result = await streamAnswer(
@@ -387,9 +396,11 @@ export default function SessionPage() {
             jobProfileId: jobId || undefined,
             recentTranscript: transcript,
             detectedQuestion: question,
+            focusHint,
             questionType,
             answerMode: mode,
             interviewStage,
+            answerLanguage: settings.answerLanguage,
             maxSentences: settings.maxSentences,
             boldKeywords: settings.boldKeywords,
             priorTurns: priorTurnsRef.current,
@@ -450,6 +461,7 @@ export default function SessionPage() {
             answer: answer.answer,
             answerMode: mode,
             interviewStage,
+            answerLanguage: settings.answerLanguage,
             candidateProfileId: candidateId || undefined,
             jobProfileId: jobId || undefined,
             maxSentences: settings.maxSentences,
@@ -1181,6 +1193,23 @@ function lastSentences(text: string, n: number): string {
   const sentences = trimmed.match(/[^.!?]+[.!?]+|\S[^.!?]*$/g);
   if (!sentences || sentences.length <= n) return trimmed;
   return sentences.slice(-n).join(" ").trim();
+}
+
+// The interviewer's latest utterance — a soft focus hint sent alongside the
+// transcript so the model answers the most recent ask, not something stale.
+// Prefers the last sentence; if that sentence is short (likely a terse
+// question that needs its setup), include the one before it too.
+function latestUtterance(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  const sentences = trimmed.match(/[^.!?]+[.!?]+|\S[^.!?]*$/g);
+  if (!sentences || sentences.length === 0) return trimmed;
+  const tail = sentences.slice(-2).map((s) => s.trim());
+  const last = tail[tail.length - 1];
+  if (tail.length === 2 && last.split(/\s+/).length <= 7) {
+    return tail.join(" ");
+  }
+  return last;
 }
 
 // Remove the leading words of `text` that are already covered by `consumed` (a

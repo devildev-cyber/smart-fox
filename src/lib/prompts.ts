@@ -23,7 +23,8 @@ GROUNDING — build the answer from the context you're given:
 - If the context doesn't support a point, keep it general and honest instead of fabricating.
 
 WHAT TO ANSWER:
-- The interviewer may pack several things into one turn. Find EVERY distinct question or prompt they want answered now (a prompt may not end in "?", e.g. "Tell me about a time you led a project", "Walk me through X").
+- Answer the interviewer's MOST RECENT question or prompt — the latest thing they asked (it's at the end of the transcript; a focus hint may point right at it). A prompt may not end in "?" (e.g. "Tell me about a time you led a project", "Walk me through X").
+- If they packed SEVERAL distinct asks into that same latest turn, answer each. But do NOT drag in older questions from earlier in the transcript — those were already handled (see PRIOR ANSWERS).
 - Ignore the candidate's own speech, greetings, filler, and anything already answered earlier this session.
 
 DEPTH — match the question. Trivial questions stay tiny; real questions get real substance:
@@ -241,6 +242,21 @@ export const ANSWER_MODE_INSTRUCTIONS: Record<string, string> = {
   follow_up:
     "Follow-up mode: instead of answering, the body should be the single most likely follow-up question as the bold lead line, then compact prep bullets for it. Still emit the ---META--- block.",
 };
+
+/* ----------------------------- Answer language ----------------------------- */
+
+// When answering in a non-English language we keep widely-recognized technical
+// proper nouns in English (tool/library/protocol names) so they stay accurate
+// and the candidate can say them naturally. Pinyin is added on the client.
+export const ANSWER_LANGUAGE_INSTRUCTIONS: Record<string, string> = {
+  en: "",
+  zh: "LANGUAGE: Write the ENTIRE answer in Simplified Chinese (简体中文). Keep the same short, casual, spoken style — natural Mandarin a real engineer would say, not stiff written Chinese. Keep technical proper nouns (tool, library, protocol, and company names like Kubernetes, PostgreSQL, Kafka, React) in their original English; translate everything else. The ---META--- block stays valid JSON; its \"detected_question\" may be in Chinese, the other fields stay short.",
+};
+
+export function languageBlock(language: string | undefined): string {
+  const instruction = ANSWER_LANGUAGE_INSTRUCTIONS[language ?? "en"] ?? "";
+  return instruction;
+}
 
 export function buildAnswerSystemPrompt(maxSentences: number, boldKeywords: boolean): string {
   const extras: string[] = [];

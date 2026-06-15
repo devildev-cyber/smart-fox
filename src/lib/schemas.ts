@@ -79,6 +79,12 @@ export const interviewStageSchema = z.enum([
 ]);
 export type InterviewStage = z.infer<typeof interviewStageSchema>;
 
+// Language the generated answer should be written in. "en" is the default;
+// "zh" produces Simplified Chinese (rendered with per-character pinyin so the
+// candidate can read it aloud).
+export const answerLanguageSchema = z.enum(["en", "zh"]);
+export type AnswerLanguage = z.infer<typeof answerLanguageSchema>;
+
 export const storyCategorySchema = z.enum([
   "tell_me_about_yourself",
   "backend_experience",
@@ -220,9 +226,13 @@ export const generateAnswerRequestSchema = z
     // Optional: if empty, the model infers the latest question from the
     // transcript and answers it in a single call (faster).
     detectedQuestion: z.string().default(""),
+    // Soft steer toward the interviewer's most recent words (the latest
+    // utterance the candidate clicked to answer). The model can still correct it.
+    focusHint: z.string().default(""),
     questionType: questionTypeSchema.optional(),
     answerMode: answerModeSchema.default("default"),
     interviewStage: interviewStageSchema.default("general"),
+    answerLanguage: answerLanguageSchema.default("en"),
     maxSentences: z.number().int().min(1).max(8).default(4),
     boldKeywords: z.boolean().default(false),
     // Prior answered turns this session, so the model can reference instead of repeat.
@@ -237,6 +247,7 @@ export const rewriteAnswerRequestSchema = z.object({
   answer: z.string().min(1, "An existing answer is required"),
   answerMode: answerModeSchema,
   interviewStage: interviewStageSchema.default("general"),
+  answerLanguage: answerLanguageSchema.default("en"),
   candidateProfileId: z.string().optional(),
   jobProfileId: z.string().optional(),
   maxSentences: z.number().int().min(1).max(8).default(4),

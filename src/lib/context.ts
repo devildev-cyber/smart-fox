@@ -183,6 +183,7 @@ export function buildAnswerContext(params: {
   detectedQuestion: string;
   questionType?: string;
   recentTranscript: string;
+  focusHint?: string;
   candidate?: CandidateStructured | null;
   job?: JobStructured | null;
   selected: SelectedContext;
@@ -191,16 +192,29 @@ export function buildAnswerContext(params: {
 }): string {
   const { detectedQuestion, questionType, recentTranscript, candidate, job, selected } =
     params;
+  const focusHint = (params.focusHint ?? "").trim();
+  const transcript = recentTranscript.slice(-2000).trim();
+  const hasExplicitQuestion = Boolean(detectedQuestion.trim());
 
   const parts: string[] = [];
 
-  if (detectedQuestion.trim()) {
-    parts.push(`DETECTED QUESTION:\n${detectedQuestion}`);
+  // The thing to answer ALWAYS comes first. With an explicit question that's the
+  // question; otherwise it's the transcript itself, framed so the model answers
+  // the LATEST utterance (which is at the end) rather than something stale.
+  if (hasExplicitQuestion) {
+    parts.push(`QUESTION TO ANSWER:\n${detectedQuestion}`);
     if (questionType) parts.push(`QUESTION TYPE: ${questionType}`);
   } else {
-    parts.push(
-      "TASK: Read the recent transcript below and answer the interviewer's latest question."
-    );
+    const task: string[] = [
+      "TASK — answer the interviewer's MOST RECENT question or prompt. It's at the END of the transcript; earlier lines are only there to interpret it. A prompt may not end in \"?\". Ignore the candidate's own speech, greetings, and filler.",
+    ];
+    if (focusHint) {
+      task.push(`INTERVIEWER'S LATEST WORDS — this is what to answer:\n${focusHint}`);
+    }
+    if (transcript) {
+      task.push(`TRANSCRIPT:\n${transcript}`);
+    }
+    parts.push(task.join("\n\n"));
   }
 
   if (candidate) {
@@ -263,8 +277,10 @@ export function buildAnswerContext(params: {
     );
   }
 
-  if (recentTranscript.trim()) {
-    parts.push(`RECENT TRANSCRIPT (context only):\n${recentTranscript.slice(-2000)}`);
+  // Only re-show the transcript at the bottom when an explicit question was
+  // given (in one-shot mode it's already shown prominently up top as the ask).
+  if (hasExplicitQuestion && transcript) {
+    parts.push(`RECENT TRANSCRIPT (context only):\n${transcript}`);
   }
 
   return parts.join("\n\n");

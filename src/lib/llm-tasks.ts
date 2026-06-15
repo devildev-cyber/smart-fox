@@ -6,6 +6,7 @@ import {
   CANDIDATE_EXTRACT_PROMPT,
   INTERVIEW_STAGE_INSTRUCTIONS,
   JOB_EXTRACT_PROMPT,
+  languageBlock,
   QUESTION_DETECTOR_PROMPT,
   REVIEW_PROMPT,
   REWRITE_PROMPT,
@@ -18,6 +19,7 @@ import {
   generatedStoriesSchema,
   jobStructuredSchema,
   postInterviewReviewSchema,
+  type AnswerLanguage,
   type AnswerMode,
   type CandidateStructured,
   type InterviewStage,
@@ -105,11 +107,13 @@ export async function streamGenerateAnswer(params: {
   detectedQuestion: string;
   questionType?: string;
   recentTranscript: string;
+  focusHint?: string;
   candidate?: CandidateStructured | null;
   job?: JobStructured | null;
   stories?: StoryLike[];
   answerMode: AnswerMode;
   interviewStage?: InterviewStage;
+  answerLanguage?: AnswerLanguage;
   maxSentences: number;
   boldKeywords: boolean;
   rawResumeFallback?: string;
@@ -117,8 +121,16 @@ export async function streamGenerateAnswer(params: {
 }) {
   const oneShot = !params.detectedQuestion.trim();
 
+  // Use the most specific signal we have to retrieve relevant resume facts and
+  // stories: an explicit question, else the latest-utterance focus hint, else
+  // the whole transcript.
+  const retrievalQuery =
+    params.detectedQuestion.trim() ||
+    (params.focusHint ?? "").trim() ||
+    params.recentTranscript;
+
   const selected = selectContext({
-    question: params.detectedQuestion.trim() || params.recentTranscript,
+    question: retrievalQuery,
     candidate: params.candidate,
     job: params.job,
     stories: params.stories,
@@ -128,6 +140,7 @@ export async function streamGenerateAnswer(params: {
     detectedQuestion: params.detectedQuestion,
     questionType: params.questionType,
     recentTranscript: params.recentTranscript,
+    focusHint: params.focusHint,
     candidate: params.candidate,
     job: params.job,
     selected,
@@ -139,12 +152,15 @@ export async function streamGenerateAnswer(params: {
     ANSWER_MODE_INSTRUCTIONS[params.answerMode] ?? ANSWER_MODE_INSTRUCTIONS.default;
 
   const oneShotInstruction = oneShot
-    ? "\n\nNO EXPLICIT QUESTION WAS PROVIDED. Identify every distinct question or prompt the interviewer is asking the candidate to respond to right now (a prompt may not end in '?'). Ignore the candidate's own speech, greetings, and filler. If there is no clear prompt yet, give a brief, safe holding answer."
+    ? "\n\nNO EXPLICIT QUESTION WAS PROVIDED. Identify the interviewer's most recent question or prompt (it's at the end of the transcript; a focus hint may point at it). If they packed several asks into that latest turn, answer each. Ignore the candidate's own speech, greetings, and filler. If there is no clear prompt yet, give a brief, safe holding answer."
     : "";
+
+  const language = languageBlock(params.answerLanguage);
+  const languageInstruction = language ? `\n\n${language}` : "";
 
   const system = `${buildAnswerSystemPrompt(params.maxSentences, params.boldKeywords)}\n\n${stageBlock(
     params.interviewStage
-  )}\n\nMODE:\n${modeInstruction}${oneShotInstruction}`;
+  )}\n\nMODE:\n${modeInstruction}${oneShotInstruction}${languageInstruction}`;
 
   // Live answers use the user-selectable "live answer" model (fastModel) so the
   // teleprompter streams quickly; heavy analysis stays on the strong model.
@@ -162,6 +178,7 @@ export async function streamRewriteAnswer(params: {
   answer: string;
   answerMode: AnswerMode;
   interviewStage?: InterviewStage;
+  answerLanguage?: AnswerLanguage;
   candidate?: CandidateStructured | null;
   job?: JobStructured | null;
   maxSentences: number;
@@ -198,10 +215,13 @@ export async function streamRewriteAnswer(params: {
     );
   }
 
+  const language = languageBlock(params.answerLanguage);
+  const languageInstruction = language ? `\n\n${language}` : "";
+
   return streamText({
     // Same selectable "live answer" model as generation.
     model: (await getRuntimeConfig()).fastModel,
-    system: `${REWRITE_PROMPT}\n\n${stageBlock(params.interviewStage)}\n\nCONSTRAINTS:\n- ${constraints.join(
+    system: `${REWRITE_PROMPT}\n\n${stageBlock(params.interviewStage)}${languageInstruction}\n\nCONSTRAINTS:\n- ${constraints.join(
       "\n- "
     )}`,
     user: userParts.join("\n\n"),

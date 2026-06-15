@@ -29,6 +29,7 @@ import { useSettings } from "@/hooks/use-settings";
 import {
   ANSWER_MODE_LABELS,
   ANSWER_FONT_SIZE_LABELS,
+  ANSWER_LANGUAGES,
   INTERVIEW_STAGE_LABELS,
   STT_LANGUAGES,
   type AnswerFontSize,
@@ -36,6 +37,7 @@ import {
 import {
   answerModeSchema,
   interviewStageSchema,
+  type AnswerLanguage,
   type AnswerMode,
   type InterviewStage,
 } from "@/lib/schemas";
@@ -192,6 +194,27 @@ export default function SettingsPage() {
                   ).map((s) => (
                     <SelectItem key={s} value={s}>
                       {ANSWER_FONT_SIZE_LABELS[s]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Answer language</Label>
+              <Select
+                value={settings.answerLanguage}
+                onValueChange={(v) =>
+                  update({ answerLanguage: v as AnswerLanguage })
+                }
+                disabled={!hydrated}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ANSWER_LANGUAGES.map((l) => (
+                    <SelectItem key={l.value} value={l.value}>
+                      {l.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
