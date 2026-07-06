@@ -14,6 +14,7 @@ import {
   MonitorSpeaker,
   Info,
   ChevronRight,
+  Compass,
 } from "lucide-react";
 import {
   Card,
@@ -26,7 +27,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -63,6 +63,7 @@ import type {
   CandidateProfileDto,
   JobProfileDto,
 } from "@/lib/session-types";
+import type { PositioningBrief, BriefProject, BriefQa, WeakSpot } from "@/lib/types";
 
 // Static class strings so Tailwind keeps them; maps the answer-size setting.
 const ANSWER_FONT_SIZE_CLASS = {
@@ -100,6 +101,12 @@ interface LogEntry {
   at: number;
 }
 
+// Result of a streaming generate/rewrite run.
+type StreamOutcome =
+  | { kind: "answer"; result: AnswerResult }
+  | { kind: "no_answer" }
+  | { kind: "superseded" };
+
 export default function SessionPage() {
   const { settings, hydrated } = useSettings();
 
@@ -135,6 +142,12 @@ export default function SessionPage() {
   // In-session log of generated Q/A turns (newest first), collapsible for reference.
   const [log, setLog] = React.useState<LogEntry[]>([]);
 
+  // Strategic positioning brief for the selected (candidate, job) pair. Built
+  // once and cached server-side; it's injected into every answer automatically.
+  const [positioning, setPositioning] = React.useState<PositioningBrief | null>(null);
+  const [briefLoading, setBriefLoading] = React.useState(false);
+  const [briefBuilding, setBriefBuilding] = React.useState(false);
+
   // Refs to avoid stale closures in async/debounced handlers.
   const finalsRef = React.useRef<FinalChunk[]>([]);
   const interimRef = React.useRef("");
@@ -156,7 +169,13 @@ export default function SessionPage() {
   // Streaming + session memory.
   const streamAbort = React.useRef<AbortController | null>(null);
   const priorTurnsRef = React.useRef<PriorTurnState[]>([]);
+  // Mirror of `answer` so async handlers can restore it (e.g. after NO_ANSWER)
+  // without depending on stale closure state.
+  const answerRef = React.useRef<AnswerResult | null>(null);
 
+  React.useEffect(() => {
+    answerRef.current = answer;
+  }, [answer]);
   React.useEffect(() => {
     finalsRef.current = finals;
   }, [finals]);
@@ -197,6 +216,63 @@ export default function SessionPage() {
       }
     })();
   }, []);
+
+  // Load any cached positioning brief whenever the candidate/job pair changes.
+  React.useEffect(() => {
+    if (!candidateId || !jobId) {
+      setPositioning(null);
+      return;
+    }
+    let cancelled = false;
+    setBriefLoading(true);
+    (async () => {
+      try {
+        const { brief } = await apiFetch<{ brief: PositioningBrief | null }>(
+          `/api/positioning-brief?candidateProfileId=${encodeURIComponent(
+            candidateId
+          )}&jobProfileId=${encodeURIComponent(jobId)}`
+        );
+        if (!cancelled) setPositioning(brief);
+      } catch {
+        if (!cancelled) setPositioning(null);
+      } finally {
+        if (!cancelled) setBriefLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [candidateId, jobId]);
+
+  const buildBrief = React.useCallback(async () => {
+    if (!candidateId || !jobId) {
+      toast.error("Pick a candidate and a job profile first.");
+      return;
+    }
+    setBriefBuilding(true);
+    try {
+      const { brief } = await apiFetch<{ brief: PositioningBrief }>(
+        "/api/positioning-brief",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            candidateProfileId: candidateId,
+            jobProfileId: jobId,
+          }),
+        }
+      );
+      setPositioning(brief);
+      toast.success("Positioning brief ready", {
+        description: "It now shapes every answer for this role.",
+      });
+    } catch (err) {
+      toast.error("Could not build positioning brief", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setBriefBuilding(false);
+    }
+  }, [candidateId, jobId]);
 
   const windowMs = (settings.transcriptWindowSeconds || 90) * 1000;
 
@@ -272,17 +348,25 @@ export default function SessionPage() {
 
   // Shared streaming driver for both Generate and Rewrite. Seeds an empty
   // answer, streams Markdown deltas into it live, then parses the trailing
-  // metadata. Aborts any earlier in-flight stream. Returns the final answer, or
-  // null if this run was superseded by a newer one.
+  // metadata. Aborts any earlier in-flight stream.
+  //
+  // Outcome:
+  //  - "answer"     -> a real answer was produced
+  //  - "no_answer"  -> the model decided there was nothing to answer (NO_ANSWER
+  //                    sentinel); the prior answer is left on screen untouched
+  //  - "superseded" -> a newer run replaced this one (aborted); stay silent
   const streamAnswer = React.useCallback(
     async (
       url: string,
       payload: Record<string, unknown>,
       knownQuestion: string
-    ): Promise<AnswerResult | null> => {
+    ): Promise<StreamOutcome> => {
       streamAbort.current?.abort();
       const controller = new AbortController();
       streamAbort.current = controller;
+      // Snapshot the currently-shown answer so a NO_ANSWER run can restore it
+      // instead of blanking the card.
+      const previous = answerRef.current;
       setGenerating(true);
       setAnswer((prev) => ({
         detected_question: knownQuestion || prev?.detected_question || "",
@@ -299,12 +383,22 @@ export default function SessionPage() {
           { method: "POST", body: JSON.stringify(payload), signal: controller.signal },
           (acc) => {
             const { body } = parseAnswerStream(acc);
-            setAnswer((prev) => (prev ? { ...prev, answer: body } : prev));
+            // While the model is emitting the NO_ANSWER sentinel, keep the
+            // loading shimmer instead of flashing the raw token.
+            const shown = looksLikeNoAnswer(body) ? "" : body;
+            setAnswer((prev) => (prev ? { ...prev, answer: shown } : prev));
           }
         );
 
         const { body, meta, error } = parseAnswerStream(full);
         if (error) throw new Error(error);
+
+        if (isNoAnswerBody(body)) {
+          // Nothing to answer — put the previous answer back so the screen
+          // doesn't blank out on a passing remark.
+          setAnswer(previous);
+          return { kind: "no_answer" };
+        }
 
         const finalQuestion = knownQuestion || meta?.detected_question || "";
         const result: AnswerResult = {
@@ -316,10 +410,10 @@ export default function SessionPage() {
           possible_follow_up: meta?.possible_follow_up ?? "",
         };
         setAnswer(result);
-        return result;
+        return { kind: "answer", result };
       } catch (err) {
         // A superseded stream aborts intentionally — stay silent.
-        if (controller.signal.aborted) return null;
+        if (controller.signal.aborted) return { kind: "superseded" };
         throw err;
       } finally {
         if (streamAbort.current === controller) {
@@ -338,34 +432,37 @@ export default function SessionPage() {
     ) => {
       const question = (opts.override ?? detectedRef.current).trim();
 
-      // Decide what transcript text to send, and whether to advance the marker.
+      // Decide what to send, and whether to advance the "answered up to here"
+      // marker. We hand the model two distinct things:
+      //   focusHint  -> the interviewer's latest words, i.e. what to ANSWER
+      //   transcript -> earlier speech, only as background to interpret it
       let transcript = "";
+      let focusHint = "";
       let advanceTo: number | null = null;
       // Interim snapshot at the moment we build the delta, committed on success
       // so the next delta can strip it once it finalizes.
       let interimSnapshot = "";
-      // Raw text (no "(earlier)/(now)" markers) used to derive the focus hint.
-      let focusText = "";
 
       if (question) {
-        // Explicit typed question: answer it with recent context. Marker is
-        // out-of-band here, so we leave it untouched.
+        // Explicit typed question: it IS the ask. Send recent speech as context.
         transcript = recentForAnswer();
       } else if (opts.wide) {
         // Regenerate / recovery: re-read a wider window and ignore the marker so
-        // a wrong boundary or mis-click can be corrected.
+        // a wrong boundary or mis-click can be corrected. Point at the tail.
         transcript = lastSentences(recentTranscript(), 8);
-        focusText = transcript;
+        focusHint = latestUtterance(transcript);
       } else {
-        // Normal flow: answer only what's new since the last answer (+overlap).
+        // Normal flow: the interviewer's latest TURN is everything new since the
+        // last answer. Hand that WHOLE turn to the model as the thing to answer
+        // (so a long, multi-question turn gets each part answered), with a
+        // little earlier speech as background only. This is the core of "send
+        // the last part as raw script, get back the question(s) + answer".
         const { newText, context, maxSeq } = buildDelta();
         if (newText) {
-          transcript = context
-            ? `(earlier) ${context}\n(now) ${newText}`
-            : newText;
+          focusHint = newText;
+          transcript = context; // earlier background only (may be empty)
           advanceTo = maxSeq;
           interimSnapshot = interimRef.current.trim();
-          focusText = newText;
         } else if (opts.auto) {
           // Auto-answer with nothing new to say: do nothing (no re-answering).
           return;
@@ -373,23 +470,19 @@ export default function SessionPage() {
           // Manual click with nothing new: best-effort answer of the recent
           // window. Harmless, and the marker is left alone.
           transcript = recentForAnswer();
-          focusText = transcript;
+          focusHint = latestUtterance(transcript);
         }
       }
 
-      if (!question && !transcript) {
+      if (!question && !transcript && !focusHint) {
         toast.error("Nothing to answer yet", {
           description: "Record/paste some transcript, or type a question.",
         });
         return;
       }
-      // Soft steer toward the most recent ask. With an explicit typed question
-      // there's nothing to hint; otherwise point at the tail of what's new
-      // (derived from the raw text so the "(now)" marker never leaks in).
-      const focusHint = question ? "" : latestUtterance(focusText);
       setLastMode(mode);
       try {
-        const result = await streamAnswer(
+        const outcome = await streamAnswer(
           "/api/generate-answer/stream",
           {
             candidateProfileId: candidateId || undefined,
@@ -407,7 +500,20 @@ export default function SessionPage() {
           },
           question
         );
-        if (!result) return; // superseded by a newer generate
+        if (outcome.kind === "superseded") return; // a newer generate replaced this
+        if (outcome.kind === "no_answer") {
+          // The model judged there's nothing to answer. Don't advance the
+          // marker (so a real ask in the growing delta still gets picked up),
+          // don't log it. Only nudge the user when they asked explicitly.
+          if (!opts.auto) {
+            toast("Nothing to answer there", {
+              description: "The latest speech didn't look like a question yet.",
+            });
+          }
+          setQuestionReady(false);
+          return;
+        }
+        const result = outcome.result;
         // Advance the consumed marker only when we actually answered a fresh
         // delta, so the next Generate won't re-answer this text.
         if (advanceTo !== null) {
@@ -826,6 +932,14 @@ export default function SessionPage() {
         </CardContent>
       </Card>
 
+      <PositioningBriefCard
+        brief={positioning}
+        loading={briefLoading}
+        building={briefBuilding}
+        disabled={!candidateId || !jobId}
+        onBuild={() => void buildBrief()}
+      />
+
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Left panel */}
         <div className="space-y-4">
@@ -1019,36 +1133,10 @@ export default function SessionPage() {
                 )}
               </div>
 
-              {answer && (
-                <div className="space-y-2 text-sm">
-                  {answer.keywords.length > 0 && (
-                    <div>
-                      <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                        Keywords to say
-                      </p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {answer.keywords.map((k, i) => (
-                          <Badge key={i} variant="secondary" className="font-normal">
-                            {k}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {answer.risk_note && (
-                    <div className="flex items-start gap-2 rounded-md bg-warning/10 px-3 py-2 text-warning">
-                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                      <span>{answer.risk_note}</span>
-                    </div>
-                  )}
-                  {answer.possible_follow_up && (
-                    <div>
-                      <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                        Possible follow-up
-                      </p>
-                      <p className="text-muted-foreground">{answer.possible_follow_up}</p>
-                    </div>
-                  )}
+              {answer?.risk_note && (
+                <div className="flex items-start gap-2 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{answer.risk_note}</span>
                 </div>
               )}
             </CardContent>
@@ -1182,6 +1270,173 @@ function SessionStatus({
       <span className="text-muted-foreground">
         {recording ? "Recording" : sessionId ? "Session active" : "Not started"}
       </span>
+    </div>
+  );
+}
+
+// The model emits the bare token NO_ANSWER (with no ---META--- block) when the
+// latest interviewer turn isn't actually something to answer. Detect it
+// defensively, tolerating stray leading markdown emphasis.
+const NO_ANSWER_TOKEN = "NO_ANSWER";
+
+function normalizeSentinel(body: string): string {
+  return body.trim().replace(/^[*_`>#\s]+/, "").toUpperCase();
+}
+
+function isNoAnswerBody(body: string): boolean {
+  return normalizeSentinel(body).startsWith(NO_ANSWER_TOKEN);
+}
+
+// During streaming, also treat an in-progress prefix of the token (e.g. "NO_")
+// as the sentinel, so the raw token never flashes on screen before the run
+// finishes. A real answer that merely starts with "No" diverges from the token
+// quickly (e.g. "No," vs "NO_ANSWER") and renders normally.
+function looksLikeNoAnswer(body: string): boolean {
+  const s = normalizeSentinel(body);
+  return s.length > 0 && (s.startsWith(NO_ANSWER_TOKEN) || NO_ANSWER_TOKEN.startsWith(s));
+}
+
+function PositioningBriefCard({
+  brief,
+  loading,
+  building,
+  disabled,
+  onBuild,
+}: {
+  brief: PositioningBrief | null;
+  loading: boolean;
+  building: boolean;
+  disabled: boolean;
+  onBuild: () => void;
+}) {
+  return (
+    <Card>
+      <CardHeader className="flex-row items-start justify-between space-y-0 pb-3">
+        <div className="space-y-0.5">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Compass className="h-4 w-4" /> Positioning brief
+            {brief && !building && (
+              <span className="rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-success">
+                Active
+              </span>
+            )}
+          </CardTitle>
+          <CardDescription>
+            One-time strategy for this candidate + role. It shapes every answer automatically.
+          </CardDescription>
+        </div>
+        <Button
+          size="sm"
+          variant={brief ? "outline" : "default"}
+          onClick={onBuild}
+          disabled={disabled || building}
+        >
+          {building ? <Spinner /> : <Sparkles className="h-4 w-4" />}
+          {brief ? "Rebuild" : "Build brief"}
+        </Button>
+      </CardHeader>
+      <CardContent>
+        {disabled ? (
+          <p className="text-sm text-muted-foreground">
+            Pick a candidate and a job profile to build a brief.
+          </p>
+        ) : building ? (
+          <p className="text-sm text-muted-foreground">
+            Analyzing resume + JD to build your positioning…
+          </p>
+        ) : loading ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : brief ? (
+          <details className="group">
+            <summary className="flex cursor-pointer list-none items-center gap-2 text-sm [&::-webkit-details-marker]:hidden">
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+              <span className="font-medium">
+                {brief.headline || "View positioning"}
+              </span>
+            </summary>
+            <div className="mt-3 space-y-4 border-t border-border pt-3 text-sm">
+              {brief.signature_projects.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Signature projects
+                  </p>
+                  {brief.signature_projects.map((p: BriefProject, i: number) => (
+                    <div
+                      key={i}
+                      className="rounded-md border border-border bg-secondary/20 px-2.5 py-2"
+                    >
+                      <p className="font-medium">
+                        {p.title || "Project"}
+                        {p.what ? <span className="font-normal text-muted-foreground"> — {p.what}</span> : null}
+                      </p>
+                      {p.contributions.length > 0 && (
+                        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted-foreground">
+                          {p.contributions.map((c, ci) => (
+                            <li key={ci}>{c}</li>
+                          ))}
+                        </ul>
+                      )}
+                      <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+                        {p.tech.length > 0 && <span>Tech: {p.tech.join(", ")}</span>}
+                        {p.impact.length > 0 && <span>Impact: {p.impact.join("; ")}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <BriefList label="Why you fit" items={brief.why_fit} />
+              {brief.prepared_answers.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Prepared answers
+                  </p>
+                  {brief.prepared_answers.map((qa: BriefQa, i: number) => (
+                    <div key={i}>
+                      {qa.question && <p className="font-medium">{qa.question}</p>}
+                      <p className="text-muted-foreground">{qa.answer}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {brief.weak_spots.length > 0 && (
+                <div>
+                  <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Weak spots
+                  </p>
+                  <ul className="space-y-1">
+                    {brief.weak_spots.map((w: WeakSpot, i: number) => (
+                      <li key={i} className="text-muted-foreground">
+                        <span className="font-medium text-foreground">{w.concern}</span>
+                        {w.how_to_handle ? ` — ${w.how_to_handle}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </details>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No brief yet. Build one so answers stay specific and on-message for this role.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function BriefList({ label, items }: { label: string; items: string[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div>
+      <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground">
+        {items.map((it, i) => (
+          <li key={i}>{it}</li>
+        ))}
+      </ul>
     </div>
   );
 }

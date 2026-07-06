@@ -1,4 +1,11 @@
-import type { CandidateStructured, JobStructured } from "./schemas";
+import type {
+  BriefProject,
+  BriefQa,
+  CandidateStructured,
+  JobStructured,
+  PositioningBrief,
+  WeakSpot,
+} from "./schemas";
 
 export interface CandidateProfileDto {
   id: string;
@@ -85,4 +92,11 @@ export interface SessionDetail {
   turns: TurnDto[];
 }
 
-export type { CandidateStructured, JobStructured };
+export type {
+  BriefProject,
+  BriefQa,
+  CandidateStructured,
+  JobStructured,
+  PositioningBrief,
+  WeakSpot,
+};

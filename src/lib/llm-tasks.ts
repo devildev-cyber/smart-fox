@@ -7,7 +7,7 @@ import {
   INTERVIEW_STAGE_INSTRUCTIONS,
   JOB_EXTRACT_PROMPT,
   languageBlock,
-  QUESTION_DETECTOR_PROMPT,
+  POSITIONING_BRIEF_PROMPT,
   REVIEW_PROMPT,
   REWRITE_PROMPT,
   STORY_GEN_PROMPT,
@@ -15,15 +15,16 @@ import {
 } from "./prompts";
 import {
   candidateStructuredSchema,
-  detectQuestionResponseSchema,
   generatedStoriesSchema,
   jobStructuredSchema,
+  positioningBriefSchema,
   postInterviewReviewSchema,
   type AnswerLanguage,
   type AnswerMode,
   type CandidateStructured,
   type InterviewStage,
   type JobStructured,
+  type PositioningBrief,
 } from "./schemas";
 import {
   buildAnswerContext,
@@ -53,25 +54,41 @@ export async function extractJobProfile(rawJobDescription: string) {
   });
 }
 
-export async function detectQuestion(params: {
-  recentTranscript: string;
-  previousQuestion?: string;
-  candidateName?: string;
-}) {
-  const userParts = [`RECENT TRANSCRIPT:\n${params.recentTranscript}`];
-  if (params.previousQuestion) {
-    userParts.push(`PREVIOUS QUESTION (already handled, ignore if repeated):\n${params.previousQuestion}`);
-  }
-  if (params.candidateName) {
-    userParts.push(`CANDIDATE NAME (this person is the candidate, not the interviewer): ${params.candidateName}`);
-  }
+/**
+ * Build the one-time strategic positioning brief for a (candidate, job) pair.
+ * Uses the strong analysis model; cached in the DB and injected into every live
+ * answer for that pair.
+ */
+export async function generatePositioningBrief(params: {
+  candidate: CandidateStructured;
+  rawResumeText: string;
+  job: JobStructured;
+}): Promise<PositioningBrief> {
+  const jobSummary = {
+    company: params.job.company,
+    role: params.job.role_title,
+    seniority: params.job.seniority,
+    domain: params.job.domain,
+    must_have_skills: params.job.must_have_skills,
+    preferred_skills: params.job.preferred_skills,
+    responsibilities: params.job.responsibilities,
+    likely_interview_focus: params.job.likely_interview_focus,
+    likely_questions: params.job.likely_questions,
+  };
+
+  const user = [
+    `TARGET JOB:\n${JSON.stringify(jobSummary, null, 2)}`,
+    `STRUCTURED CANDIDATE PROFILE:\n${JSON.stringify(params.candidate, null, 2)}`,
+    `RAW RESUME (for evidence):\n${params.rawResumeText.slice(0, 6000)}`,
+  ].join("\n\n");
 
   return callJson({
-    model: (await getRuntimeConfig()).fastModel,
-    system: QUESTION_DETECTOR_PROMPT,
-    user: userParts.join("\n\n"),
-    schema: detectQuestionResponseSchema,
-    temperature: 0.1,
+    model: (await getRuntimeConfig()).strongModel,
+    system: POSITIONING_BRIEF_PROMPT,
+    user,
+    schema: positioningBriefSchema,
+    temperature: 0.4,
+    timeoutMs: 60_000,
   });
 }
 
@@ -79,16 +96,18 @@ export async function detectQuestion(params: {
 // recruiter and culture chats want warmth and variety (higher). The "human"
 // mode always nudges things looser on top of the stage baseline.
 const STAGE_TEMPERATURE: Record<string, number> = {
-  general: 0.6,
+  general: 0.55,
   technical: 0.4,
-  behavioral: 0.55,
-  recruiter_hr: 0.7,
-  culture_fit: 0.85,
+  behavioral: 0.5,
+  recruiter_hr: 0.55,
+  culture_fit: 0.6,
 };
 
 function answerTemperature(stage: InterviewStage | undefined, mode: AnswerMode): number {
-  const base = STAGE_TEMPERATURE[stage ?? "general"] ?? 0.6;
-  if (mode === "human") return Math.max(base, 0.85);
+  const base = STAGE_TEMPERATURE[stage ?? "general"] ?? 0.55;
+  // "human" mode loosens tone a little, but not so much it rambles or drifts
+  // off the facts.
+  if (mode === "human") return Math.max(base, 0.7);
   return base;
 }
 
@@ -111,6 +130,7 @@ export async function streamGenerateAnswer(params: {
   candidate?: CandidateStructured | null;
   job?: JobStructured | null;
   stories?: StoryLike[];
+  positioning?: PositioningBrief | null;
   answerMode: AnswerMode;
   interviewStage?: InterviewStage;
   answerLanguage?: AnswerLanguage;
@@ -144,6 +164,7 @@ export async function streamGenerateAnswer(params: {
     candidate: params.candidate,
     job: params.job,
     selected,
+    positioning: params.positioning,
     rawResumeFallback: params.rawResumeFallback,
     priorTurns: params.priorTurns,
   });
@@ -152,7 +173,7 @@ export async function streamGenerateAnswer(params: {
     ANSWER_MODE_INSTRUCTIONS[params.answerMode] ?? ANSWER_MODE_INSTRUCTIONS.default;
 
   const oneShotInstruction = oneShot
-    ? "\n\nNO EXPLICIT QUESTION WAS PROVIDED. Identify the interviewer's most recent question or prompt (it's at the end of the transcript; a focus hint may point at it). If they packed several asks into that latest turn, answer each. Ignore the candidate's own speech, greetings, and filler. If there is no clear prompt yet, give a brief, safe holding answer."
+    ? "\n\nNO EXPLICIT QUESTION WAS PROVIDED. YOU decide what's being asked: identify the interviewer's most recent question or prompt (it's at the end of the transcript; a focus hint may point at it). If they packed several asks into that latest turn, answer each. Ignore the candidate's own speech, greetings, and filler. If the latest turn is not actually something to answer yet (acknowledgement, small talk, the candidate speaking, or an unfinished fragment), output exactly NO_ANSWER and nothing else."
     : "";
 
   const language = languageBlock(params.answerLanguage);

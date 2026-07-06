@@ -1,4 +1,4 @@
-import type { CandidateStructured, JobStructured } from "./schemas";
+import type { CandidateStructured, JobStructured, PositioningBrief } from "./schemas";
 
 export interface StoryLike {
   id: string;
@@ -179,6 +179,46 @@ export interface PriorTurn {
   answerGist: string;
 }
 
+/** Render the positioning brief into a specific, skimmable block for the model. */
+function renderPositioning(brief: PositioningBrief): string {
+  const lines: string[] = [
+    "POSITIONING — your CANONICAL facts for THIS role. Pull the signature project or prepared answer that fits the question and reuse its exact names, tech, and numbers. Stay this specific; never go generic:",
+  ];
+  if (brief.headline) lines.push(`Known for: ${brief.headline}`);
+
+  if (brief.signature_projects.length) {
+    lines.push("\nSIGNATURE PROJECTS (reuse these exact stories):");
+    for (const p of brief.signature_projects.slice(0, 6)) {
+      const parts: string[] = [];
+      const head = [p.title, p.what].filter(Boolean).join(" — ");
+      if (head) parts.push(head);
+      if (p.contributions.length) parts.push(`did: ${p.contributions.slice(0, 5).join("; ")}`);
+      if (p.tech.length) parts.push(`tech: ${p.tech.slice(0, 12).join(", ")}`);
+      if (p.impact.length) parts.push(`impact: ${p.impact.slice(0, 4).join("; ")}`);
+      if (parts.length) lines.push(`- ${parts.join(" | ")}`);
+    }
+  }
+
+  if (brief.why_fit.length) lines.push(`\nWhy a fit: ${brief.why_fit.slice(0, 5).join("; ")}`);
+
+  if (brief.prepared_answers.length) {
+    lines.push("\nPREPARED ANSWERS (adapt to the exact wording asked; keep the facts):");
+    for (const qa of brief.prepared_answers.slice(0, 8)) {
+      if (qa.answer) lines.push(`- ${qa.question ? `${qa.question}: ` : ""}${qa.answer}`);
+    }
+  }
+
+  if (brief.weak_spots.length) {
+    const ws = brief.weak_spots
+      .slice(0, 5)
+      .map((w) => (w.how_to_handle ? `${w.concern} -> ${w.how_to_handle}` : w.concern))
+      .join(" | ");
+    lines.push(`\nIf a weak spot comes up: ${ws}`);
+  }
+
+  return lines.join("\n");
+}
+
 export function buildAnswerContext(params: {
   detectedQuestion: string;
   questionType?: string;
@@ -187,6 +227,7 @@ export function buildAnswerContext(params: {
   candidate?: CandidateStructured | null;
   job?: JobStructured | null;
   selected: SelectedContext;
+  positioning?: PositioningBrief | null;
   rawResumeFallback?: string;
   priorTurns?: PriorTurn[];
 }): string {
@@ -205,16 +246,33 @@ export function buildAnswerContext(params: {
     parts.push(`QUESTION TO ANSWER:\n${detectedQuestion}`);
     if (questionType) parts.push(`QUESTION TYPE: ${questionType}`);
   } else {
-    const task: string[] = [
-      "TASK — answer the interviewer's MOST RECENT question or prompt. It's at the END of the transcript; earlier lines are only there to interpret it. A prompt may not end in \"?\". Ignore the candidate's own speech, greetings, and filler.",
-    ];
+    const task: string[] = [];
     if (focusHint) {
+      // The latest turn is handed over explicitly, so we don't rely on "it's at
+      // the end of the transcript". Earlier speech (if any) is background only.
+      task.push(
+        "TASK — answer what the interviewer asks under INTERVIEWER'S LATEST WORDS. If they packed SEVERAL distinct questions or prompts into it, answer EACH (as numbered blocks). A prompt may not end in \"?\". Anything under EARLIER CONTEXT is only there to interpret the ask — do NOT re-answer it. Ignore the candidate's own speech, greetings, and filler."
+      );
       task.push(`INTERVIEWER'S LATEST WORDS — this is what to answer:\n${focusHint}`);
-    }
-    if (transcript) {
-      task.push(`TRANSCRIPT:\n${transcript}`);
+      if (transcript) {
+        task.push(`EARLIER CONTEXT (background only, already handled):\n${transcript}`);
+      }
+    } else {
+      // No explicit latest-turn hint: fall back to "the ask is at the end".
+      task.push(
+        "TASK — answer the interviewer's MOST RECENT question or prompt. It's at the END of the transcript; earlier lines are only there to interpret it. If several distinct things were asked, answer each. A prompt may not end in \"?\". Ignore the candidate's own speech, greetings, and filler."
+      );
+      if (transcript) {
+        task.push(`TRANSCRIPT:\n${transcript}`);
+      }
     }
     parts.push(task.join("\n\n"));
+  }
+
+  // Strategic positioning comes right after the ask so it frames everything
+  // below. When present it's the primary source of specifics for the answer.
+  if (params.positioning) {
+    parts.push(renderPositioning(params.positioning));
   }
 
   if (candidate) {

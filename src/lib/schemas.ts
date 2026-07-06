@@ -30,13 +30,122 @@ function itemToLabel(item: unknown): string {
   return String(item);
 }
 
+/** Coerce any value into a clean string[] (objects → labels, scalars → [x]). */
+function toStringArray(val: unknown): string[] {
+  const arr = Array.isArray(val) ? val : val == null ? [] : [val];
+  return arr.map(itemToLabel).filter((s) => s.length > 0);
+}
+
 /**
  * A string[] field that tolerates a model returning objects, a single value,
  * or null instead of a clean array of strings. Always yields string[].
  */
-const looseStringArray = z.any().transform((val): string[] => {
+const looseStringArray = z.any().transform((val): string[] => toStringArray(val));
+
+function firstString(o: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    const label = itemToLabel(o[k]);
+    if (label) return label;
+  }
+  return "";
+}
+
+export interface WeakSpot {
+  concern: string;
+  how_to_handle: string;
+}
+
+// A concrete, reusable "signature project" the candidate leans on across
+// answers. Titles may be invented but plausible; contributions/tech/impact are
+// specific so answers never drift into generic territory or contradict.
+export interface BriefProject {
+  title: string;
+  what: string;
+  contributions: string[];
+  tech: string[];
+  impact: string[];
+}
+
+const looseProjects = z.any().transform((val): BriefProject[] => {
   const arr = Array.isArray(val) ? val : val == null ? [] : [val];
-  return arr.map(itemToLabel).filter((s) => s.length > 0);
+  return arr
+    .map((item): BriefProject => {
+      if (typeof item === "string") {
+        return { title: "", what: item.trim(), contributions: [], tech: [], impact: [] };
+      }
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        const o = item as Record<string, unknown>;
+        return {
+          title: firstString(o, ["title", "name", "project"]),
+          what: firstString(o, ["what", "description", "summary", "about", "detail"]),
+          contributions: toStringArray(
+            o.contributions ?? o.did ?? o.what_i_did ?? o.actions ?? o.responsibilities
+          ),
+          tech: toStringArray(o.tech ?? o.stack ?? o.technologies ?? o.tools),
+          impact: toStringArray(o.impact ?? o.results ?? o.outcomes ?? o.metrics),
+        };
+      }
+      return { title: "", what: itemToLabel(item), contributions: [], tech: [], impact: [] };
+    })
+    .filter(
+      (p) =>
+        p.title || p.what || p.contributions.length || p.tech.length || p.impact.length
+    );
+});
+
+// A canned, ready-to-say answer for a common question ("tell me about
+// yourself", "why are you leaving", "why this company"), in the candidate's
+// natural voice.
+export interface BriefQa {
+  question: string;
+  answer: string;
+}
+
+const looseQa = z.any().transform((val): BriefQa[] => {
+  const arr = Array.isArray(val) ? val : val == null ? [] : [val];
+  return arr
+    .map((item): BriefQa => {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        const o = item as Record<string, unknown>;
+        return {
+          question: firstString(o, ["question", "q", "prompt", "title"]),
+          answer: firstString(o, ["answer", "a", "response", "text", "reply"]),
+        };
+      }
+      return { question: "", answer: itemToLabel(item) };
+    })
+    .filter((qa) => qa.question || qa.answer);
+});
+
+/**
+ * Weak-spot list that tolerates the model returning plain strings, a single
+ * object, or objects with varied key names. Always yields {concern, how_to_handle}[].
+ */
+const looseWeakSpots = z.any().transform((val): WeakSpot[] => {
+  const arr = Array.isArray(val) ? val : val == null ? [] : [val];
+  return arr
+    .map((item): WeakSpot => {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        const o = item as Record<string, unknown>;
+        const concern = itemToLabel(
+          o.concern ?? o.gap ?? o.weakness ?? o.risk ?? o.objection ?? o.topic ?? ""
+        );
+        const how = itemToLabel(
+          o.how_to_handle ??
+            o.handle ??
+            o.answer ??
+            o.response ??
+            o.mitigation ??
+            o.strategy ??
+            o.how ??
+            ""
+        );
+        if (concern || how) return { concern, how_to_handle: how };
+        return { concern: itemToLabel(item), how_to_handle: "" };
+      }
+      return { concern: itemToLabel(item), how_to_handle: "" };
+    })
+    .filter((w) => w.concern || w.how_to_handle);
 });
 
 /* ----------------------------- Shared enums ----------------------------- */
@@ -140,16 +249,27 @@ export const jobStructuredSchema = z.object({
 });
 export type JobStructured = z.infer<typeof jobStructuredSchema>;
 
-/* ----------------------------- LLM responses ----------------------------- */
-
-export const detectQuestionResponseSchema = z.object({
-  has_question: z.boolean(),
-  question: z.string().nullable(),
-  question_type: questionTypeSchema,
-  confidence: confidenceSchema,
-  reason: z.string(),
+// A pre-interview strategic brief for one (candidate, job) pair. Generated once
+// from the resume + JD + company + role, it's a bank of SPECIFIC, realistic
+// stories + ready-to-say answers, injected into every live answer so answers
+// stay concrete, human, and consistent (same project names, tech, and metrics
+// everywhere — no duplication or contradiction mid-interview).
+export const positioningBriefSchema = z.object({
+  // One or two lines: what this candidate should be known for, for this role.
+  headline: z.string().default(""),
+  // The reusable signature stories — the heart of the brief.
+  signature_projects: looseProjects,
+  // Short reasons they match this specific role/JD.
+  why_fit: looseStringArray,
+  // Canned, ready-to-say answers for common questions (tell me about yourself,
+  // why leaving, why this company, biggest impact, a weakness, career goal).
+  prepared_answers: looseQa,
+  // Likely gaps/objections and how to handle them honestly.
+  weak_spots: looseWeakSpots,
 });
-export type DetectQuestionResponse = z.infer<typeof detectQuestionResponseSchema>;
+export type PositioningBrief = z.infer<typeof positioningBriefSchema>;
+
+/* ----------------------------- LLM responses ----------------------------- */
 
 export const generateAnswerResponseSchema = z.object({
   detected_question: z.string(),
@@ -206,12 +326,6 @@ export const analyzeJobRequestSchema = z.object({
   rawJobDescription: z.string().min(1, "Job description is required"),
 });
 
-export const detectQuestionRequestSchema = z.object({
-  recentTranscript: z.string().min(1, "Transcript is required"),
-  previousQuestion: z.string().optional(),
-  candidateName: z.string().optional(),
-});
-
 export const priorTurnSchema = z.object({
   question: z.string().default(""),
   answerGist: z.string().default(""),
@@ -238,9 +352,12 @@ export const generateAnswerRequestSchema = z
     // Prior answered turns this session, so the model can reference instead of repeat.
     priorTurns: z.array(priorTurnSchema).default([]),
   })
-  .refine((d) => d.detectedQuestion.trim() || d.recentTranscript.trim(), {
-    message: "Provide a detected question or some recent transcript.",
-  });
+  .refine(
+    (d) => d.detectedQuestion.trim() || d.recentTranscript.trim() || d.focusHint.trim(),
+    {
+      message: "Provide a detected question, some recent transcript, or a focus hint.",
+    }
+  );
 
 export const rewriteAnswerRequestSchema = z.object({
   detectedQuestion: z.string().min(1),
@@ -257,6 +374,11 @@ export const rewriteAnswerRequestSchema = z.object({
 export const generateStoriesRequestSchema = z.object({
   candidateProfileId: z.string().min(1, "A candidate profile is required"),
   existingCategories: z.array(z.string()).default([]),
+});
+
+export const positioningBriefRequestSchema = z.object({
+  candidateProfileId: z.string().min(1, "A candidate profile is required"),
+  jobProfileId: z.string().min(1, "A job profile is required"),
 });
 
 export const improveStoryRequestSchema = z.object({

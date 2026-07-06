@@ -1,7 +1,12 @@
 import { handleRouteError, jsonError, parseBody, streamTextResponse } from "@/lib/api";
 import { generateAnswerRequestSchema } from "@/lib/schemas";
 import { streamGenerateAnswer } from "@/lib/llm-tasks";
-import { loadAllStories, loadCandidateStructured, loadJobStructured } from "@/lib/repo";
+import {
+  loadAllStories,
+  loadCandidateStructured,
+  loadJobStructured,
+  loadPositioningBrief,
+} from "@/lib/repo";
 import { getRuntimeConfig } from "@/lib/runtime-config";
 import { assertAccess } from "@/lib/access";
 
@@ -25,10 +30,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const [{ candidate, rawResumeText }, job, stories] = await Promise.all([
+  const [{ candidate, rawResumeText }, job, stories, positioning] = await Promise.all([
     loadCandidateStructured(data.candidateProfileId),
     loadJobStructured(data.jobProfileId),
     loadAllStories(),
+    loadPositioningBrief(data.candidateProfileId, data.jobProfileId),
   ]);
 
   const generator = await streamGenerateAnswer({
@@ -39,6 +45,7 @@ export async function POST(request: Request) {
     candidate,
     job,
     stories,
+    positioning,
     answerMode: data.answerMode,
     interviewStage: data.interviewStage,
     answerLanguage: data.answerLanguage,

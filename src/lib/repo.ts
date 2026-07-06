@@ -3,8 +3,10 @@ import { safeJsonParse } from "./utils";
 import {
   candidateStructuredSchema,
   jobStructuredSchema,
+  positioningBriefSchema,
   type CandidateStructured,
   type JobStructured,
+  type PositioningBrief,
 } from "./schemas";
 import type { StoryLike } from "./context";
 
@@ -31,6 +33,38 @@ export async function loadJobStructured(
   if (!row) return null;
   const parsed = jobStructuredSchema.safeParse(safeJsonParse(row.structuredJobJson, {}));
   return parsed.success ? parsed.data : null;
+}
+
+/** Load the cached positioning brief for a (candidate, job) pair, if any. */
+export async function loadPositioningBrief(
+  candidateProfileId: string | null | undefined,
+  jobProfileId: string | null | undefined
+): Promise<PositioningBrief | null> {
+  if (!candidateProfileId || !jobProfileId) return null;
+  const row = await prisma.positioningBrief.findUnique({
+    where: {
+      candidateProfileId_jobProfileId: { candidateProfileId, jobProfileId },
+    },
+  });
+  if (!row) return null;
+  const parsed = positioningBriefSchema.safeParse(safeJsonParse(row.briefJson, {}));
+  return parsed.success ? parsed.data : null;
+}
+
+/** Create or replace the positioning brief for a (candidate, job) pair. */
+export async function savePositioningBrief(
+  candidateProfileId: string,
+  jobProfileId: string,
+  brief: PositioningBrief
+): Promise<void> {
+  const briefJson = JSON.stringify(brief);
+  await prisma.positioningBrief.upsert({
+    where: {
+      candidateProfileId_jobProfileId: { candidateProfileId, jobProfileId },
+    },
+    create: { candidateProfileId, jobProfileId, briefJson },
+    update: { briefJson },
+  });
 }
 
 export interface StoryDto {

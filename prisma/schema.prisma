@@ -39,6 +39,17 @@ model JobProfile {
   sessions            InterviewSession[]
 }
 
+model PositioningBrief {
+  id                 String   @id @default(cuid())
+  candidateProfileId String
+  jobProfileId       String
+  briefJson          String
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([candidateProfileId, jobProfileId])
+}
+
 model Story {
   id               String   @id @default(cuid())
   title            String
