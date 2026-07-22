@@ -194,27 +194,55 @@ export type InterviewStage = z.infer<typeof interviewStageSchema>;
 export const answerLanguageSchema = z.enum(["en", "zh"]);
 export type AnswerLanguage = z.infer<typeof answerLanguageSchema>;
 
-export const storyCategorySchema = z.enum([
+// Story categories are NOT a fixed engineering list. They're chosen per
+// candidate + target role at generation time (see planStoryCategories), so a
+// data/ML/PM/QA/design candidate gets categories that fit THEIR field. These
+// universal, role-agnostic categories apply to any interview and are used as
+// the safe fallback + as suggestions in the manual editor. Any slug is valid.
+export const UNIVERSAL_STORY_CATEGORIES = [
   "tell_me_about_yourself",
-  "backend_experience",
-  "frontend_experience",
-  "cloud_experience",
-  "production_bug",
-  "architecture_decision",
-  "performance_optimization",
-  "security",
-  "mentoring",
-  "stakeholder_collaboration",
-  "conflict",
-  "mistake",
-  "learning_new_tech",
-  "legacy_refactor",
-  "distributed_team",
-  "integration_project",
-]);
-export type StoryCategory = z.infer<typeof storyCategorySchema>;
+  "signature_project",
+  "biggest_impact",
+  "leadership_or_ownership",
+  "teamwork_and_collaboration",
+  "handling_conflict",
+  "overcoming_failure",
+  "adapting_to_change",
+  "driving_improvement",
+  "why_this_role",
+] as const;
 
-export const STORY_CATEGORIES: StoryCategory[] = storyCategorySchema.options;
+/** Normalize any label/id into a lowercase underscore slug. */
+export function toCategorySlug(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+// A free-form category slug. Bad/empty values fall back to "general" so a
+// single odd story never fails a whole batch.
+export const storyCategorySchema = z
+  .preprocess((v) => toCategorySlug(v), z.string().min(1))
+  .catch("general");
+export type StoryCategory = string;
+
+export const STORY_CATEGORIES: string[] = [...UNIVERSAL_STORY_CATEGORIES];
+
+// LLM plan of which story categories to build for a specific candidate + role.
+export const storyCategoryPlanSchema = z.object({
+  categories: z
+    .array(
+      z.object({
+        id: z.preprocess((v) => toCategorySlug(v), z.string().min(1)),
+        label: z.string().default(""),
+        focus: z.string().default(""),
+      })
+    )
+    .default([]),
+});
+export type StoryCategoryPlan = z.infer<typeof storyCategoryPlanSchema>;
 
 /* --------------------------- Structured profiles --------------------------- */
 

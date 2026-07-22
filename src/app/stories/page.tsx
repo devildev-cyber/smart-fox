@@ -28,8 +28,7 @@ import {
 } from "@/components/ui/tabs";
 import { StoryDialog } from "@/components/story-dialog";
 import { apiFetch } from "@/lib/client";
-import { STORY_CATEGORY_LABELS } from "@/lib/constants";
-import { STORY_CATEGORIES, type StoryCategory } from "@/lib/schemas";
+import { storyCategoryLabel } from "@/lib/constants";
 import type { CandidateProfileDto, ProfilesResponse, StoryDto } from "@/lib/types";
 
 export default function StoriesPage() {
@@ -233,8 +232,7 @@ function StoryCard({
   onDelete: () => void;
   onImprove: () => void;
 }) {
-  const categoryLabel =
-    STORY_CATEGORY_LABELS[story.category as StoryCategory] ?? story.category;
+  const categoryLabel = storyCategoryLabel(story.category);
 
   return (
     <Card>
@@ -328,7 +326,7 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
           <Plus className="h-4 w-4" /> New story
         </Button>
         <p className="text-xs text-muted-foreground">
-          {STORY_CATEGORIES.length} categories supported
+          Categories are tailored to your resume &amp; role
         </p>
       </CardContent>
     </Card>

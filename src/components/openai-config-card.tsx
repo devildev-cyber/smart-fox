@@ -394,9 +394,10 @@ export function OpenAiConfigCard({
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            {REASONING_EFFORT_OPTIONS.find((o) => o.value === effort)?.hint}. Only
-            applies to reasoning models (gpt-5 family, o-series); other models ignore
-            it. Higher effort also slows live answers.
+            {REASONING_EFFORT_OPTIONS.find((o) => o.value === effort)?.hint}. Tunes{" "}
+            <strong>live answers</strong>; analysis tasks (resume, JD, stories, brief)
+            automatically think one step harder. Only applies to reasoning models
+            (gpt-5 family, o-series); other models ignore it.
           </p>
         </div>
       </CardContent>

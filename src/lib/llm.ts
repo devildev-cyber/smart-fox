@@ -104,6 +104,11 @@ interface JsonCallOptions<S extends z.ZodTypeAny> {
   timeoutMs?: number;
   /** Override the output token cap (e.g. for large structured results). */
   maxOutputTokens?: number;
+  /**
+   * Override the reasoning-effort tier. Defaults to the "analysis" tier (one
+   * step above the live tier) since these JSON calls aren't latency-sensitive.
+   */
+  reasoningTier?: ReasoningEffortTier;
 }
 
 /**
@@ -118,6 +123,17 @@ function isReasoningModel(model: string): boolean {
   return false;
 }
 
+/**
+ * "Pro" reasoning models (gpt-5-pro, gpt-5.5-pro, o1-pro, o3-pro, …) run
+ * extended reasoning. They ONLY accept reasoning.effort "high" — "minimal",
+ * "low", and "medium" all return a 400 — and they can take minutes to respond,
+ * so they need a much larger timeout + output budget than ordinary reasoning
+ * models. Getting either wrong looks like "analysis just doesn't work".
+ */
+function isProModel(model: string): boolean {
+  return model.toLowerCase().includes("-pro");
+}
+
 type ReasoningEffortValue = NonNullable<
   OpenAI.Responses.ResponseCreateParams["reasoning"]
 >["effort"];
@@ -129,10 +145,20 @@ type ReasoningEffortValue = NonNullable<
 // o-series bottoms out at "low" — so both get "low". Balanced/Thorough use
 // medium/high, which every reasoning model accepts. Cast because some SDK
 // versions don't yet list "minimal" even though the API accepts it.
+// The global reasoning-effort tier is tuned for LIVE answers (latency matters).
+// Analysis/prep tasks (resume, JD, stories, brief, review) aren't latency-
+// sensitive, so they think one step harder for better quality.
+function analysisTier(liveTier: ReasoningEffortTier): ReasoningEffortTier {
+  if (liveTier === "fast") return "balanced";
+  return "thorough";
+}
+
 function reasoningEffort(
   model: string,
   tier: ReasoningEffortTier
 ): ReasoningEffortValue {
+  // Pro models reject everything except "high", so ignore the tier for them.
+  if (isProModel(model)) return "high" as ReasoningEffortValue;
   if (tier === "balanced") return "medium" as ReasoningEffortValue;
   if (tier === "thorough") return "high" as ReasoningEffortValue;
 
@@ -140,6 +166,43 @@ function reasoningEffort(
   const l = model.toLowerCase();
   // `gpt-5`, `gpt-5-mini`, etc. match, but `gpt-5.5` (dot after the 5) does not.
   return (/^gpt-5(?:-|$)/.test(l) ? "minimal" : "low") as ReasoningEffortValue;
+}
+
+/**
+ * Recover from a 400 caused by an unsupported request parameter by adjusting
+ * `params` in place and retrying once. Handles the two cases models disagree
+ * on: `temperature` (reasoning models reject it) and `reasoning.effort` (pro
+ * models only accept "high"; some models reject reasoning entirely). Anything
+ * else re-throws so real errors still surface.
+ */
+async function recoverFromParamError<T>(
+  err: unknown,
+  params: OpenAI.Responses.ResponseCreateParams,
+  retry: () => Promise<T>
+): Promise<T> {
+  if (!(err instanceof OpenAI.APIError) || err.status !== 400) throw err;
+  const msg = err.message;
+
+  if (/temperature/i.test(msg) && params.temperature != null) {
+    delete params.temperature;
+    return retry();
+  }
+
+  if (
+    params.reasoning &&
+    /(reasoning|effort|minimal|not supported|unsupported value)/i.test(msg)
+  ) {
+    // Step down: try "high" (accepted by every reasoning model incl. pro),
+    // then drop reasoning altogether if even that is rejected.
+    if (params.reasoning.effort !== "high") {
+      params.reasoning = { effort: "high" as ReasoningEffortValue };
+    } else {
+      delete params.reasoning;
+    }
+    return retry();
+  }
+
+  throw err;
 }
 
 /**
@@ -154,9 +217,12 @@ export async function callJson<S extends z.ZodTypeAny>({
   temperature = 0.5,
   timeoutMs,
   maxOutputTokens,
+  reasoningTier,
 }: JsonCallOptions<S>): Promise<z.output<S>> {
   const openai = await getClient();
-  const { reasoningEffort: effortTier } = await getRuntimeConfig();
+  const { reasoningEffort: liveTier } = await getRuntimeConfig();
+  // Analysis calls think one step harder than the live-tuned tier by default.
+  const effortTier = reasoningTier ?? analysisTier(liveTier);
 
   // The Responses API requires the literal word "json" in the input messages
   // when using a json_object text format. Guarantee it for every call.
@@ -165,6 +231,7 @@ export async function callJson<S extends z.ZodTypeAny>({
     : `${user}\n\nReturn the result as a JSON object only.`;
 
   const reasoning = isReasoningModel(model);
+  const pro = isProModel(model);
 
   const run = async (): Promise<z.output<S>> => {
     const params: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
@@ -179,34 +246,28 @@ export async function callJson<S extends z.ZodTypeAny>({
       // CRITICAL: reasoning tokens are billed against the output budget. Without
       // a generous cap the model can spend the whole budget "thinking" and
       // return an empty/truncated body — which looks like "GPT-5 doesn't work"
-      // for resume/JD/story extraction. Give it ample room for reasoning + JSON.
-      params.max_output_tokens = maxOutputTokens ?? 16000;
+      // for resume/JD/story extraction. Pro models think the hardest, so give
+      // them the most room; other reasoning models get an ample default.
+      params.max_output_tokens = maxOutputTokens ?? (pro ? 32000 : 16000);
     } else {
       params.temperature = temperature;
       if (maxOutputTokens) params.max_output_tokens = maxOutputTokens;
     }
 
     // Reasoning models are slower; give them more headroom than the client
-    // default. Callers can override for heavy structured tasks.
-    const timeout = timeoutMs ?? (reasoning ? 90_000 : DEFAULT_TIMEOUT_MS);
+    // default. Pro models can take minutes, so they get much longer still.
+    // Callers can override for heavy structured tasks.
+    const timeout =
+      timeoutMs ?? (pro ? 300_000 : reasoning ? 90_000 : DEFAULT_TIMEOUT_MS);
     const requestOptions = { timeout };
 
     let response;
     try {
       response = await openai.responses.create(params, requestOptions);
     } catch (err) {
-      // Defensive fallback for any model that unexpectedly rejects temperature.
-      if (
-        err instanceof OpenAI.APIError &&
-        err.status === 400 &&
-        /temperature/i.test(err.message) &&
-        params.temperature !== undefined
-      ) {
-        delete params.temperature;
-        response = await openai.responses.create(params, requestOptions);
-      } else {
-        throw err;
-      }
+      response = await recoverFromParamError(err, params, () =>
+        openai.responses.create(params, requestOptions)
+      );
     }
 
     const raw = response.output_text;
@@ -269,6 +330,7 @@ export async function* streamText({
   const openai = await getClient();
   const { reasoningEffort: effortTier } = await getRuntimeConfig();
   const reasoning = isReasoningModel(model);
+  const pro = isProModel(model);
 
   const params: OpenAI.Responses.ResponseCreateParamsStreaming = {
     model,
@@ -279,17 +341,35 @@ export async function* streamText({
   if (reasoning) {
     params.reasoning = { effort: reasoningEffort(model, effortTier) };
     // Leave room for reasoning tokens + the spoken answer so the body isn't
-    // starved (reasoning tokens count against the output budget).
-    params.max_output_tokens = 4000;
+    // starved (reasoning tokens count against the output budget). Pro models
+    // think much harder, so give them more.
+    params.max_output_tokens = pro ? 8000 : 4000;
   } else {
     params.temperature = temperature;
   }
 
-  // Reasoning models are slower to first token; give them more headroom.
-  const requestOptions = reasoning ? { timeout: 90_000 } : undefined;
+  // Reasoning models are slower to first token; pro models slower still.
+  const requestOptions = pro
+    ? { timeout: 300_000 }
+    : reasoning
+      ? { timeout: 90_000 }
+      : undefined;
+
+  const open = () => openai.responses.create(params, requestOptions);
+
+  let stream;
+  try {
+    stream = await open();
+  } catch (err) {
+    // Adjust an unsupported param (temperature / reasoning effort) and retry.
+    try {
+      stream = await recoverFromParamError(err, params, open);
+    } catch (finalErr) {
+      throw normalizeError(finalErr);
+    }
+  }
 
   try {
-    const stream = await openai.responses.create(params, requestOptions);
     for await (const event of stream) {
       if (event.type === "response.output_text.delta" && event.delta) {
         yield event.delta;
@@ -298,22 +378,6 @@ export async function* streamText({
       }
     }
   } catch (err) {
-    if (
-      err instanceof OpenAI.APIError &&
-      err.status === 400 &&
-      /temperature/i.test(err.message) &&
-      params.temperature !== undefined
-    ) {
-      // Retry once without temperature for models that reject it.
-      delete params.temperature;
-      const stream = await openai.responses.create(params, requestOptions);
-      for await (const event of stream) {
-        if (event.type === "response.output_text.delta" && event.delta) {
-          yield event.delta;
-        }
-      }
-      return;
-    }
     throw normalizeError(err);
   }
 }

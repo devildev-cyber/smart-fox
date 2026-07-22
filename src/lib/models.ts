@@ -98,12 +98,18 @@ export function recommendModels(ids: string[]): ModelRecommendation {
     return score(b) - score(a) || a.localeCompare(b);
   });
 
-  // Strongest = top of ranked chat list.
-  const recommendedStrong = chat[0] ?? null;
+  // "Pro" reasoning models (gpt-5-pro, o1-pro, …) rank highest but take minutes
+  // and only run at "high" effort — a poor default for a real-time tool — so we
+  // don't auto-recommend them. They stay in the list; the user can still pick
+  // one deliberately.
+  const nonPro = chat.filter((m) => !m.toLowerCase().includes("-pro"));
+
+  // Strongest = top of the ranked non-pro list.
+  const recommendedStrong = nonPro[0] ?? chat[0] ?? null;
 
   // Fast = best "mini"/"nano" model, else the second-best chat model.
-  const small = chat.find((m) => /mini|nano/.test(m.toLowerCase()));
-  const recommendedFast = small ?? chat[1] ?? chat[0] ?? null;
+  const small = nonPro.find((m) => /mini|nano/.test(m.toLowerCase()));
+  const recommendedFast = small ?? nonPro[1] ?? nonPro[0] ?? chat[0] ?? null;
 
   const recommendedTranscription =
     transcription.find((m) => m.includes("mini")) ?? transcription[0] ?? null;

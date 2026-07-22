@@ -4,7 +4,6 @@ import { generateStoriesRequestSchema, candidateStructuredSchema } from "@/lib/s
 import { generateStories } from "@/lib/llm-tasks";
 import { serializeStory } from "@/lib/repo";
 import { safeJsonParse } from "@/lib/utils";
-import { STORY_CATEGORIES } from "@/lib/schemas";
 import { assertAccess } from "@/lib/access";
 
 export const runtime = "nodejs";
@@ -27,19 +26,16 @@ export async function POST(request: Request) {
       return jsonError("Candidate profile is not analyzed yet. Analyze the resume first.", 422);
     }
 
-    // Only generate stories for categories that don't already exist.
-    const missing = STORY_CATEGORIES.filter(
-      (c) => !data.existingCategories.includes(c)
-    );
-    if (missing.length === 0) {
-      return jsonOk({ created: [] });
-    }
-
+    // Categories are planned for this candidate's field/role and skip anything
+    // the bank already covers (no hardcoded engineering list).
     const { stories } = await generateStories({
       candidate: parsed.data,
       rawResumeText: candidateRow.rawResumeText,
-      categories: missing,
+      existingCategories: data.existingCategories,
     });
+    if (stories.length === 0) {
+      return jsonOk({ created: [] });
+    }
 
     const created = [];
     for (const s of stories) {

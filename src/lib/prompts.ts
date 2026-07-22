@@ -7,7 +7,8 @@ export const PROMPT_VERSIONS = {
   answer: "answer-v10",
   candidateExtract: "candidate-extract-v2",
   jobExtract: "job-extract-v1",
-  storyGen: "story-gen-v2",
+  storyPlan: "story-plan-v1",
+  storyGen: "story-gen-v3",
   storyImprove: "story-improve-v1",
   rewrite: "rewrite-v5",
   review: "review-v1",
@@ -111,13 +112,26 @@ Return JSON with:
   "resume_match_keywords": []
 }`;
 
+export const STORY_CATEGORY_PLAN_PROMPT = `You plan an interview story bank for ONE candidate, tailored to THEIR field and target role. Read the structured resume (and target role, if given) and pick the story categories an interviewer for this role is most likely to probe.
+
+Rules:
+- Choose 8 to 14 categories, mixing TWO kinds:
+  1. Universal behavioral categories every interview covers: tell_me_about_yourself, signature_project, biggest_impact, leadership_or_ownership, teamwork_and_collaboration, handling_conflict, overcoming_failure, adapting_to_change, why_this_role.
+  2. Role/field-specific categories drawn from the candidate's ACTUAL field and the target role — NOT a generic software-engineering list. Pick what fits this resume. Examples by field: data/ML (model_deployment, experimentation, data_pipeline), product (roadmap_prioritization, stakeholder_alignment, product_discovery), QA (test_strategy, automation_framework, release_quality), infra/devops (incident_response, reliability, ci_cd_pipeline), design (design_system, user_research), software (system_design, production_incident, architecture_tradeoff).
+- Do NOT force software-engineering categories unless the resume is clearly a software-engineering resume.
+- Skip anything under ALREADY COVERED.
+- id: short lowercase slug with underscores. label: short human title. focus: one line on what the story should demonstrate.
+
+Return JSON only:
+{ "categories": [ { "id": "", "label": "", "focus": "" } ] }`;
+
 export const STORY_GEN_PROMPT = `You generate interview story bank entries for a candidate — in whatever field their resume is actually in (software, data, ML, PM, QA, infrastructure, design, etc.) — using ONLY the supplied structured resume profile.
 Do not invent companies, tools, metrics, projects, titles, or years that are not present in the profile.
 If evidence is weak for a category, write a general but truthful story and note it in evidence.
 
 For each requested category produce one story with:
 - title: short, specific
-- category: must be one of the requested category ids
+- category: must match the requested category id exactly
 - short_version: 1-2 spoken sentences
 - star_version: light STAR (Situation, Task, Action, Result) in natural spoken English, not robotic
 - technical_version: more architecture, tools, tradeoffs, reliability

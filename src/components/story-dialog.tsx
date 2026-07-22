@@ -15,16 +15,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { apiFetch } from "@/lib/client";
 import { STORY_CATEGORY_LABELS } from "@/lib/constants";
-import { STORY_CATEGORIES, type StoryCategory } from "@/lib/schemas";
+import { toCategorySlug } from "@/lib/schemas";
 import type { StoryDto } from "@/lib/types";
 
 interface StoryDialogProps {
@@ -36,7 +29,7 @@ interface StoryDialogProps {
 
 const emptyForm = {
   title: "",
-  category: "tell_me_about_yourself" as StoryCategory,
+  category: "tell_me_about_yourself",
   shortVersion: "",
   starVersion: "",
   technicalVersion: "",
@@ -53,7 +46,7 @@ export function StoryDialog({ open, onOpenChange, story, onSaved }: StoryDialogP
     if (story) {
       setForm({
         title: story.title,
-        category: (story.category as StoryCategory) ?? "tell_me_about_yourself",
+        category: story.category || "tell_me_about_yourself",
         shortVersion: story.shortVersion,
         starVersion: story.starVersion,
         technicalVersion: story.technicalVersion,
@@ -75,7 +68,7 @@ export function StoryDialog({ open, onOpenChange, story, onSaved }: StoryDialogP
 
     const payload = {
       title: form.title.trim(),
-      category: form.category,
+      category: toCategorySlug(form.category) || "tell_me_about_yourself",
       shortVersion: form.shortVersion,
       starVersion: form.starVersion,
       technicalVersion: form.technicalVersion,
@@ -134,21 +127,20 @@ export function StoryDialog({ open, onOpenChange, story, onSaved }: StoryDialogP
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="story-category">Category</Label>
-              <Select
+              <Input
+                id="story-category"
+                list="story-category-suggestions"
                 value={form.category}
-                onValueChange={(v) => setForm({ ...form, category: v as StoryCategory })}
-              >
-                <SelectTrigger id="story-category">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STORY_CATEGORIES.map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {STORY_CATEGORY_LABELS[c]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onChange={(e) => setForm({ ...form, category: e.target.value })}
+                placeholder="e.g. signature_project"
+              />
+              <datalist id="story-category-suggestions">
+                {Object.entries(STORY_CATEGORY_LABELS).map(([slug, label]) => (
+                  <option key={slug} value={slug}>
+                    {label}
+                  </option>
+                ))}
+              </datalist>
             </div>
           </div>
 

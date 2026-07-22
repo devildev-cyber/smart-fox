@@ -10,6 +10,7 @@ import {
   POSITIONING_BRIEF_PROMPT,
   REVIEW_PROMPT,
   REWRITE_PROMPT,
+  STORY_CATEGORY_PLAN_PROMPT,
   STORY_GEN_PROMPT,
   STORY_IMPROVE_PROMPT,
 } from "./prompts";
@@ -19,6 +20,8 @@ import {
   jobStructuredSchema,
   positioningBriefSchema,
   postInterviewReviewSchema,
+  storyCategoryPlanSchema,
+  UNIVERSAL_STORY_CATEGORIES,
   type AnswerLanguage,
   type AnswerMode,
   type CandidateStructured,
@@ -292,14 +295,63 @@ async function runWithConcurrency<T>(
   return results;
 }
 
+export interface PlannedCategory {
+  id: string;
+  label: string;
+  focus?: string;
+}
+
+/**
+ * Ask the model which story categories fit THIS candidate + role, so the story
+ * bank isn't a hardcoded engineering list. Returns a role-tailored mix of
+ * universal behavioral + field-specific categories, minus anything already
+ * covered. Falls back to the universal set if planning yields nothing.
+ */
+export async function planStoryCategories(params: {
+  candidate: CandidateStructured;
+  job?: JobStructured | null;
+  existingCategories?: string[];
+}): Promise<PlannedCategory[]> {
+  const userParts = [
+    `STRUCTURED CANDIDATE PROFILE:\n${JSON.stringify(params.candidate, null, 2)}`,
+  ];
+  if (params.job) {
+    const roleSummary = {
+      role: params.job.role_title,
+      seniority: params.job.seniority,
+      domain: params.job.domain,
+      must_have_skills: params.job.must_have_skills,
+      responsibilities: params.job.responsibilities,
+    };
+    userParts.push(`TARGET ROLE:\n${JSON.stringify(roleSummary, null, 2)}`);
+  }
+  if (params.existingCategories?.length) {
+    userParts.push(`ALREADY COVERED (do not repeat):\n${params.existingCategories.join(", ")}`);
+  }
+
+  const plan = await callJson({
+    model: (await getRuntimeConfig()).strongModel,
+    system: STORY_CATEGORY_PLAN_PROMPT,
+    user: userParts.join("\n\n"),
+    schema: storyCategoryPlanSchema,
+    temperature: 0.3,
+  });
+
+  return plan.categories.map((c) => ({
+    id: c.id,
+    label: c.label || c.id,
+    focus: c.focus,
+  }));
+}
+
 async function generateStoryBatch(
   model: string,
   candidate: CandidateStructured,
   rawResumeText: string,
-  categories: string[]
+  categories: PlannedCategory[]
 ) {
   const categoryLines = categories
-    .map((c) => `- ${c} (${STORY_CATEGORY_LABELS[c as keyof typeof STORY_CATEGORY_LABELS] ?? c})`)
+    .map((c) => `- ${c.id} — ${c.label}${c.focus ? `: ${c.focus}` : ""}`)
     .join("\n");
 
   const user = [
@@ -318,13 +370,48 @@ async function generateStoryBatch(
   });
 }
 
+const universalPlanned = (): PlannedCategory[] =>
+  UNIVERSAL_STORY_CATEGORIES.map((id) => ({
+    id,
+    label: STORY_CATEGORY_LABELS[id] ?? id,
+  }));
+
 export async function generateStories(params: {
   candidate: CandidateStructured;
   rawResumeText: string;
-  categories: string[];
+  job?: JobStructured | null;
+  existingCategories?: string[];
+  /** Optional explicit categories; if omitted, they're planned for the role. */
+  categories?: PlannedCategory[];
 }) {
   const model = (await getRuntimeConfig()).strongModel;
-  const batches = chunk(params.categories, STORY_BATCH_SIZE);
+  const existing = new Set(
+    (params.existingCategories ?? []).map((c) => c.toLowerCase())
+  );
+
+  // Resolve which categories to build: explicit > role-tailored plan > universal.
+  let planned: PlannedCategory[];
+  if (params.categories?.length) {
+    planned = params.categories;
+  } else {
+    let fromPlan: PlannedCategory[] = [];
+    try {
+      fromPlan = await planStoryCategories({
+        candidate: params.candidate,
+        job: params.job,
+        existingCategories: params.existingCategories,
+      });
+    } catch {
+      // Planning is best-effort; fall back to the universal set below.
+    }
+    planned = fromPlan.length ? fromPlan : universalPlanned();
+  }
+
+  // Never regenerate a category the bank already has.
+  planned = planned.filter((c) => c.id && !existing.has(c.id.toLowerCase()));
+  if (planned.length === 0) return { stories: [] };
+
+  const batches = chunk(planned, STORY_BATCH_SIZE);
 
   const results = await runWithConcurrency(
     batches.map(

@@ -4,27 +4,30 @@ import type {
   Confidence,
   InterviewStage,
   QuestionType,
-  StoryCategory,
 } from "./schemas";
 
-export const STORY_CATEGORY_LABELS: Record<StoryCategory, string> = {
+// Labels for the universal, role-agnostic categories. Role-specific categories
+// (chosen per candidate at generation time) won't be in this map — use
+// storyCategoryLabel() to render any slug with a sensible humanized fallback.
+export const STORY_CATEGORY_LABELS: Record<string, string> = {
   tell_me_about_yourself: "Tell me about yourself",
-  backend_experience: "Backend experience",
-  frontend_experience: "Frontend experience",
-  cloud_experience: "Cloud experience",
-  production_bug: "Production bug",
-  architecture_decision: "Architecture decision",
-  performance_optimization: "Performance optimization",
-  security: "Security",
-  mentoring: "Mentoring",
-  stakeholder_collaboration: "Stakeholder collaboration",
-  conflict: "Conflict",
-  mistake: "Mistake",
-  learning_new_tech: "Learning new tech",
-  legacy_refactor: "Legacy refactor",
-  distributed_team: "Distributed team",
-  integration_project: "Integration project",
+  signature_project: "Signature project",
+  biggest_impact: "Biggest impact",
+  leadership_or_ownership: "Leadership / ownership",
+  teamwork_and_collaboration: "Teamwork & collaboration",
+  handling_conflict: "Handling conflict",
+  overcoming_failure: "Overcoming failure",
+  adapting_to_change: "Adapting to change",
+  driving_improvement: "Driving improvement",
+  why_this_role: "Why this role",
 };
+
+/** Human label for any category slug — mapped when known, else humanized. */
+export function storyCategoryLabel(slug: string): string {
+  if (STORY_CATEGORY_LABELS[slug]) return STORY_CATEGORY_LABELS[slug];
+  const words = slug.replace(/_/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : slug;
+}
 
 export const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
   hr: "HR",
