@@ -266,8 +266,9 @@ export async function streamCodingSolution(params: {
     imageDetail: "high",
     // Correctness over raw speed: think a notch harder than the live-answer tier.
     reasoningTier: "balanced",
-    // Code + walkthrough can be long; give the body room.
-    maxOutputTokens: 4000,
+    // The step-by-step script (code chunks + narration) plus reasoning tokens
+    // can run long; give the body ample room so it never truncates mid-step.
+    maxOutputTokens: 6000,
     temperature: 0.2,
   });
 }

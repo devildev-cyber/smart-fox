@@ -6,6 +6,7 @@ import { getElectronAPI, type CodingSource } from "@/lib/electron";
 import {
   parseCodingStream,
   hasCodingContent,
+  codingTurnTitle,
   type CodingSolution,
 } from "@/lib/coding";
 
@@ -18,24 +19,46 @@ export type CodingModeChoice =
   | "test"
   | "answer";
 
-// A captured or pasted problem image. `preview` is always a data URL we can
-// render; it's also what we send to the model.
+// A captured or pasted problem image, rendered and sent as a data URL.
 export interface CaptureItem {
   id: string;
   dataUrl: string;
 }
 
+// A completed solve, kept so the candidate can flip back to earlier answers.
+export interface CodingTurn {
+  id: string;
+  at: number;
+  title: string;
+  solution: CodingSolution;
+  images: string[];
+  ask: string;
+}
+
 const MAX_IMAGES = 8;
+const MAX_HISTORY = 20;
 
 function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function emptySolution(language: string): CodingSolution {
+  return {
+    mode: null,
+    say: "",
+    steps: [],
+    language: language === "auto" ? "" : language,
+    complexity: "",
+    points: "",
+    note: "",
+    error: null,
+  };
+}
+
 /**
- * State + actions for the live-coding copilot: pick a screen once, capture one
- * or more screenshots (or paste/upload), then stream a structured solution.
- * Works in the Electron overlay (native capture) and degrades to paste/upload +
- * getDisplayMedia in a plain browser.
+ * State + actions for the live-coding copilot. Inputs are explicit and visible
+ * (captures + an editable "what they asked" field) so the same problem yields
+ * the same answer, and every solve is kept in history so nothing is lost.
  */
 export function useCoding(opts: {
   candidateId?: string;
@@ -52,6 +75,10 @@ export function useCoding(opts: {
 
   const [images, setImages] = React.useState<CaptureItem[]>([]);
   const [pastedText, setPastedText] = React.useState("");
+  // The interviewer's instruction/question, editable and visible. Empty by
+  // default so answers are predictable; the candidate can pull the latest
+  // transcript in with one click.
+  const [ask, setAsk] = React.useState("");
   const [language, setLanguage] = React.useState<string>("auto");
   const [mode, setMode] = React.useState<CodingModeChoice>("auto");
 
@@ -59,12 +86,20 @@ export function useCoding(opts: {
   const [solving, setSolving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  // Prior context so a follow-up ("now optimize", "fix the failing test")
-  // builds on the last solution instead of starting over.
-  const lastRef = React.useRef<CodingSolution | null>(null);
+  // Session history of completed solves, and which one is on screen (null =
+  // the live/most-recent solution).
+  const [history, setHistory] = React.useState<CodingTurn[]>([]);
+  const [activeTurnId, setActiveTurnId] = React.useState<string | null>(null);
+
   const abortRef = React.useRef<AbortController | null>(null);
 
-  const chosenSource = sources.find((s) => s.id === sourceId) ?? null;
+  const activeTurn =
+    activeTurnId != null ? history.find((t) => t.id === activeTurnId) ?? null : null;
+
+  // What's shown: a selected past turn, else the live solution.
+  const displayedSolution = activeTurn?.solution ?? solution;
+  const displayedImages = activeTurn ? activeTurn.images : images.map((c) => c.dataUrl);
+  const viewingHistory = Boolean(activeTurn);
 
   const refreshSources = React.useCallback(async () => {
     if (!electron?.coding) return [];
@@ -72,7 +107,6 @@ export function useCoding(opts: {
     try {
       const list = await electron.coding.listSources();
       setSources(list);
-      // Default to the primary screen if nothing chosen yet.
       setSourceId((prev) => {
         if (prev && list.some((s) => s.id === prev)) return prev;
         const screen = list.find((s) => s.id.startsWith("screen"));
@@ -86,6 +120,8 @@ export function useCoding(opts: {
 
   const addImage = React.useCallback((dataUrl: string) => {
     if (!dataUrl) return;
+    // Adding an input implies we're working on the live turn again.
+    setActiveTurnId(null);
     setImages((prev) =>
       prev.length >= MAX_IMAGES ? prev : [...prev, { id: uid(), dataUrl }]
     );
@@ -95,7 +131,6 @@ export function useCoding(opts: {
     setImages((prev) => prev.filter((c) => c.id !== id));
   }, []);
 
-  // Native screenshot of the chosen source (Electron only).
   const capture = React.useCallback(async () => {
     if (!electron?.coding) return;
     let id = sourceId;
@@ -108,7 +143,6 @@ export function useCoding(opts: {
     if (dataUrl) addImage(dataUrl);
   }, [electron, sourceId, refreshSources, addImage]);
 
-  // Browser fallback: grab a single frame via getDisplayMedia.
   const captureViaDisplayMedia = React.useCallback(async () => {
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getDisplayMedia) {
       throw new Error("Screen capture isn't available in this browser.");
@@ -119,7 +153,6 @@ export function useCoding(opts: {
       const video = document.createElement("video");
       video.srcObject = stream;
       await video.play();
-      // Let a frame render before grabbing it.
       await new Promise((r) => setTimeout(r, 250));
       const canvas = document.createElement("canvas");
       const settings = track.getSettings();
@@ -134,16 +167,26 @@ export function useCoding(opts: {
     }
   }, [addImage]);
 
-  const clearImages = React.useCallback(() => setImages([]), []);
+  // Pull the latest interviewer speech into the editable ask field.
+  const pullAsk = React.useCallback(() => {
+    const t = getTranscript?.() ?? "";
+    if (t.trim()) setAsk(t.trim());
+    return t.trim();
+  }, [getTranscript]);
 
-  // Reset everything for a brand-new problem (keeps the chosen source + prefs).
+  const selectTurn = React.useCallback((id: string | null) => {
+    setActiveTurnId(id);
+  }, []);
+
+  // Reset the live inputs for a brand-new problem (keeps history + prefs).
   const newProblem = React.useCallback(() => {
     abortRef.current?.abort();
     setImages([]);
     setPastedText("");
+    setAsk("");
     setSolution(null);
     setError(null);
-    lastRef.current = null;
+    setActiveTurnId(null);
   }, []);
 
   const stop = React.useCallback(() => {
@@ -156,44 +199,33 @@ export function useCoding(opts: {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      const transcript = getTranscript?.() ?? "";
-      const prior = lastRef.current;
+      // Follow-ups build on the most recent completed turn.
+      const prior = history[0]?.solution ?? null;
+      const priorCode = prior
+        ? prior.steps.map((s) => s.code).filter(Boolean).join("\n")
+        : "";
 
+      const imageUrls = images.map((c) => c.dataUrl);
       const payload = {
-        images: images.map((c) => c.dataUrl),
+        images: imageUrls,
         pastedText,
-        transcript,
+        transcript: ask,
         language,
         mode: overrideMode ?? mode,
         candidateProfileId: candidateId || undefined,
-        // Feed the previous turn back so follow-ups build on it.
-        priorProblem: prior
-          ? [prior.say, prior.plan].filter(Boolean).join("\n")
-          : "",
-        currentCode: prior?.code ?? "",
+        priorProblem: prior ? [prior.say, prior.points].filter(Boolean).join("\n") : "",
+        currentCode: priorCode,
       };
 
-      if (
-        payload.images.length === 0 &&
-        !payload.pastedText.trim() &&
-        !payload.transcript.trim()
-      ) {
-        setError("Capture a screenshot, paste the problem, or record some transcript first.");
+      if (imageUrls.length === 0 && !pastedText.trim() && !ask.trim()) {
+        setError("Capture a screenshot, paste the problem, or add the interviewer's ask first.");
         return;
       }
 
+      setActiveTurnId(null);
       setSolving(true);
       setError(null);
-      setSolution({
-        mode: null,
-        say: "",
-        code: "",
-        language: language === "auto" ? "" : language,
-        complexity: "",
-        plan: "",
-        note: "",
-        error: null,
-      });
+      setSolution(emptySolution(language));
 
       try {
         const full = await streamFetch(
@@ -212,8 +244,16 @@ export function useCoding(opts: {
         setSolution(parsed);
         if (parsed.error) {
           setError(parsed.error);
-        } else {
-          lastRef.current = parsed;
+        } else if (hasCodingContent(parsed)) {
+          const turn: CodingTurn = {
+            id: uid(),
+            at: Date.now(),
+            title: codingTurnTitle(parsed),
+            solution: parsed,
+            images: imageUrls,
+            ask,
+          };
+          setHistory((prev) => [turn, ...prev].slice(0, MAX_HISTORY));
         }
       } catch (err) {
         if (controller.signal.aborted) return;
@@ -225,7 +265,7 @@ export function useCoding(opts: {
         }
       }
     },
-    [images, pastedText, language, mode, candidateId, getTranscript]
+    [images, pastedText, ask, language, mode, candidateId, history]
   );
 
   React.useEffect(() => {
@@ -237,15 +277,16 @@ export function useCoding(opts: {
     sources,
     sourceId,
     setSourceId,
-    chosenSource,
     loadingSources,
     refreshSources,
     images,
     addImage,
     removeImage,
-    clearImages,
     pastedText,
     setPastedText,
+    ask,
+    setAsk,
+    pullAsk,
     language,
     setLanguage,
     mode,
@@ -258,6 +299,13 @@ export function useCoding(opts: {
     solve,
     stop,
     newProblem,
+    // History + navigation.
+    history,
+    activeTurnId,
+    selectTurn,
+    viewingHistory,
+    displayedSolution,
+    displayedImages,
     maxImages: MAX_IMAGES,
   };
 }
