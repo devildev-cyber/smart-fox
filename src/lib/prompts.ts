@@ -371,7 +371,7 @@ THE CODING SCRIPT (for new / optimize) — THIS IS THE CORE:
 
 TARGETED EDITS (for fix) — DO NOT REWRITE THE WHOLE PROGRAM:
 - Emit ONE STEP per place that actually changes. Each STEP contains ONLY the corrected line(s) for that spot — just enough surrounding code (typically 1–3 lines) to make it unambiguous where it goes. Never reproduce untouched functions or the full file.
-- Each NARRATE line pins the change to a location and reason: where it is, what was wrong, and why this fixes it — first person, spoken. Example: "In the loop condition I'm going one past the end — I'll change `i <= n` to `i < n` so it stops before the out-of-bounds index." NOT a restatement of the code.
+- Each NARRATE line pins the change to a location and reason: where it is, what was wrong, and why this fixes it — first person, spoken. Example: "In the loop condition I'm going one past the end — I'll change 'i <= n' to 'i < n' so it stops before the out-of-bounds index." NOT a restatement of the code.
 - Most fixes are 1–3 STEPs. If truly everything is broken, prefer new mode instead; don't smuggle a full rewrite in under fix.
 - The STEP chunks here are edits, not a runnable program on their own — that's expected. Keep in-code comments minimal (the narration carries the explanation).
 
