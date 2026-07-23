@@ -34,6 +34,19 @@ export function isTranscriptionModel(id: string): boolean {
 }
 
 /**
+ * Reasoning models (o-series and the gpt-5 family, excluding gpt-5-chat) do all
+ * their thinking BEFORE the first token, so they're slow to first token — a poor
+ * fit for the live-answer slot where streaming latency matters. Mirrors the
+ * server-side detection in llm.ts.
+ */
+export function isReasoningModelId(id: string): boolean {
+  const l = id.toLowerCase();
+  if (/^o\d/.test(l)) return true;
+  if (/^gpt-5/.test(l) && !l.includes("chat")) return true;
+  return false;
+}
+
+/**
  * Higher score = stronger/newer family. Parses the version number out of the id
  * so newer releases automatically rank higher (e.g. gpt-5.5 > gpt-5 > gpt-4.1 >
  * gpt-4o > gpt-3.5), without hardcoding a fixed list of model names.

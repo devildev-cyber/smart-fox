@@ -15,6 +15,7 @@ import {
   Info,
   ChevronRight,
   Compass,
+  Code2,
 } from "lucide-react";
 import {
   Card,
@@ -38,8 +39,11 @@ import {
 } from "@/components/ui/select";
 import { RichAnswer } from "@/components/rich-answer";
 import { ConfidenceBadge } from "@/components/confidence-badge";
+import { CodingPanel } from "@/components/coding-panel";
 import { apiFetch, streamFetch } from "@/lib/client";
 import { parseAnswerStream, answerGist } from "@/lib/answer-stream";
+import { collapseRepeatedText } from "@/lib/caption-reconciler";
+import { styleRiskNote } from "@/lib/answer-style";
 import { getElectronAPI } from "@/lib/electron";
 import { useSettings } from "@/hooks/use-settings";
 import { useDeepgram } from "@/hooks/use-deepgram";
@@ -136,6 +140,8 @@ export default function SessionPage() {
     React.useState<InterviewStage>("general");
   const [autoAnswer, setAutoAnswer] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
+  // Live-coding copilot overlay.
+  const [codingOpen, setCodingOpen] = React.useState(false);
   // Readiness signal so you know exactly when to press Generate.
   const [questionReady, setQuestionReady] = React.useState(false);
   const [readyConfidence, setReadyConfidence] = React.useState<string>("medium");
@@ -281,7 +287,12 @@ export default function SessionPage() {
     const recentFinals = finalsRef.current
       .filter((f) => f.at >= cutoff)
       .map((f) => f.text);
-    return [...recentFinals, interimRef.current].join(" ").trim();
+    // Safety net: collapse any repeated phrases that slipped past the caption
+    // reconciler (e.g. from the PowerShell bridge concatenating overlapping
+    // caption blocks) before the transcript reaches the model or the screen.
+    return collapseRepeatedText(
+      [...recentFinals, interimRef.current].join(" ").trim()
+    );
   }, [windowMs]);
 
   // A tighter slice (last few sentences) sent to the answer model for speed.
@@ -327,9 +338,9 @@ export default function SessionPage() {
   const buildDelta = React.useCallback(() => {
     const all = finalsRef.current;
     const fresh = all.filter((f) => f.seq > consumedSeqRef.current);
-    let newText = [...fresh.map((f) => f.text), interimRef.current]
-      .join(" ")
-      .trim();
+    let newText = collapseRepeatedText(
+      [...fresh.map((f) => f.text), interimRef.current].join(" ").trim()
+    );
     if (consumedInterimRef.current) {
       newText = stripLeadingOverlap(newText, consumedInterimRef.current);
     }
@@ -401,12 +412,15 @@ export default function SessionPage() {
         }
 
         const finalQuestion = knownQuestion || meta?.detected_question || "";
+        // Prefer the model's own risk note; otherwise fall back to a local,
+        // no-latency style check that flags banned corporate filler.
+        const riskNote = (meta?.risk_note ?? "").trim() || styleRiskNote(body);
         const result: AnswerResult = {
           detected_question: finalQuestion,
           answer: body,
           keywords: meta?.keywords ?? [],
           confidence: meta?.confidence ?? "medium",
-          risk_note: meta?.risk_note ?? "",
+          risk_note: riskNote,
           possible_follow_up: meta?.possible_follow_up ?? "",
         };
         setAnswer(result);
@@ -496,6 +510,7 @@ export default function SessionPage() {
             answerLanguage: settings.answerLanguage,
             maxSentences: settings.maxSentences,
             boldKeywords: settings.boldKeywords,
+            allowInventedDetails: settings.allowInventedDetails,
             priorTurns: priorTurnsRef.current,
           },
           question
@@ -855,10 +870,24 @@ export default function SessionPage() {
     });
   }, [settings.defaultAnswerMode]);
 
+  // Global hotkey (Ctrl/Cmd+Shift+C) to toggle the live-coding copilot.
+  React.useEffect(() => {
+    const api = getElectronAPI();
+    if (!api?.coding) return;
+    return api.coding.onToggle(() => setCodingOpen((v) => !v));
+  }, []);
+
   const openaiMissing = config && !config.openaiConfigured;
 
   return (
     <div className="space-y-4">
+      {codingOpen && (
+        <CodingPanel
+          onClose={() => setCodingOpen(false)}
+          candidateId={candidateId || undefined}
+          getTranscript={recentTranscript}
+        />
+      )}
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -867,7 +896,17 @@ export default function SessionPage() {
             Capture the interviewer and stream a spoken answer in real time.
           </p>
         </div>
-        <SessionStatus sessionId={sessionId} recording={isRecording} />
+        <div className="flex items-center gap-2">
+          <Button
+            variant={codingOpen ? "default" : "outline"}
+            size="sm"
+            onClick={() => setCodingOpen((v) => !v)}
+            title="Live-coding copilot (Ctrl/Cmd+Shift+C)"
+          >
+            <Code2 className="h-4 w-4" /> Coding
+          </Button>
+          <SessionStatus sessionId={sessionId} recording={isRecording} />
+        </div>
       </div>
 
       {openaiMissing && (

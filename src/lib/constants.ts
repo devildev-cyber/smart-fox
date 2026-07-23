@@ -87,6 +87,12 @@ export interface AppSettings {
   defaultInterviewStage: InterviewStage;
   autoAnswer: boolean;
   boldKeywords: boolean;
+  /**
+   * When on (default), the model fills thin spots with realistic, consistent
+   * specifics so answers sound like a real practitioner. Off = strict grounding:
+   * only use details actually present in the profile, stories, and JD.
+   */
+  allowInventedDetails: boolean;
   maxSentences: number;
   transcriptWindowSeconds: number;
   /** Length of each OpenAI transcription segment, in seconds. Lower = less lag. */
@@ -99,6 +105,11 @@ export interface AppSettings {
    * fewer premature triggers mid-question.
    */
   endOfTurnSeconds: number;
+  /**
+   * Stealth: exclude the desktop overlay from screen capture / screen share
+   * (and hide it from the taskbar). On by default. Desktop app only.
+   */
+  stealth: boolean;
   /** On-screen size of the generated answer text. */
   answerFontSize: AnswerFontSize;
   /** Language the generated answer is written in. "zh" adds per-character pinyin. */
@@ -119,11 +130,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultInterviewStage: "general",
   autoAnswer: false,
   boldKeywords: false,
+  allowInventedDetails: true,
   maxSentences: 4,
   transcriptWindowSeconds: 90,
   sttSegmentSeconds: 4,
   sttLanguage: "en",
-  endOfTurnSeconds: 1.8,
+  // Silence (in seconds) before we treat the interviewer's turn as finished.
+  // Lower = snappier live trigger; a superseding run aborts a slightly-early one.
+  endOfTurnSeconds: 1.2,
+  stealth: true,
   answerFontSize: "base",
   answerLanguage: "en",
 };

@@ -51,6 +51,7 @@ export async function POST(request: Request) {
     answerLanguage: data.answerLanguage,
     maxSentences: data.maxSentences,
     boldKeywords: data.boldKeywords,
+    allowInventedDetails: data.allowInventedDetails,
     rawResumeFallback: candidate ? undefined : rawResumeText || undefined,
     priorTurns: data.priorTurns,
   });

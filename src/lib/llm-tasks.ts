@@ -3,11 +3,13 @@ import { getRuntimeConfig } from "./runtime-config";
 import {
   ANSWER_MODE_INSTRUCTIONS,
   buildAnswerSystemPrompt,
+  buildCodingSystemPrompt,
   CANDIDATE_EXTRACT_PROMPT,
   INTERVIEW_STAGE_INSTRUCTIONS,
   JOB_EXTRACT_PROMPT,
   languageBlock,
   POSITIONING_BRIEF_PROMPT,
+  questionDepthBlock,
   REVIEW_PROMPT,
   REWRITE_PROMPT,
   STORY_CATEGORY_PLAN_PROMPT,
@@ -139,6 +141,8 @@ export async function streamGenerateAnswer(params: {
   answerLanguage?: AnswerLanguage;
   maxSentences: number;
   boldKeywords: boolean;
+  /** When true, the model may add plausible role-fitting specifics; off = strict grounding. */
+  allowInventedDetails?: boolean;
   rawResumeFallback?: string;
   priorTurns?: PriorTurn[];
 }) {
@@ -182,9 +186,14 @@ export async function streamGenerateAnswer(params: {
   const language = languageBlock(params.answerLanguage);
   const languageInstruction = language ? `\n\n${language}` : "";
 
-  const system = `${buildAnswerSystemPrompt(params.maxSentences, params.boldKeywords)}\n\n${stageBlock(
-    params.interviewStage
-  )}\n\nMODE:\n${modeInstruction}${oneShotInstruction}${languageInstruction}`;
+  const depth = questionDepthBlock(params.questionType);
+  const depthInstruction = depth ? `\n\n${depth}` : "";
+
+  const system = `${buildAnswerSystemPrompt(
+    params.maxSentences,
+    params.boldKeywords,
+    params.allowInventedDetails ?? true
+  )}\n\n${stageBlock(params.interviewStage)}${depthInstruction}\n\nMODE:\n${modeInstruction}${oneShotInstruction}${languageInstruction}`;
 
   // Live answers use the user-selectable "live answer" model (fastModel) so the
   // teleprompter streams quickly; heavy analysis stays on the strong model.
@@ -193,6 +202,73 @@ export async function streamGenerateAnswer(params: {
     system,
     user: context,
     temperature: answerTemperature(params.interviewStage, params.answerMode),
+  });
+}
+
+/**
+ * Solve (or fix / optimize / explain) a live coding problem from screenshot(s)
+ * plus the interviewer's words. Streams the section-tagged coding block the
+ * client parses into fixed zones. Uses the strong (vision-capable) model since
+ * correctness matters more than shaving a second off first token.
+ */
+export async function streamCodingSolution(params: {
+  images?: string[];
+  pastedText?: string;
+  transcript?: string;
+  language?: string;
+  mode?: string;
+  priorProblem?: string;
+  currentCode?: string;
+  candidate?: CandidateStructured | null;
+}) {
+  const userParts: string[] = [];
+
+  const mode = (params.mode ?? "auto").trim();
+  if (mode && mode !== "auto") {
+    userParts.push(
+      `MODE (the interviewer / candidate forced this — honor it): ${mode}`
+    );
+  }
+
+  if (params.transcript?.trim()) {
+    userParts.push(
+      `WHAT THE INTERVIEWER JUST SAID (use for intent; may be messy live captions):\n${params.transcript.trim()}`
+    );
+  }
+  if (params.pastedText?.trim()) {
+    userParts.push(`PROBLEM (pasted by the candidate):\n${params.pastedText.trim()}`);
+  }
+  if (params.priorProblem?.trim()) {
+    userParts.push(`EARLIER IN THIS CODING SESSION (context):\n${params.priorProblem.trim()}`);
+  }
+  if (params.currentCode?.trim()) {
+    userParts.push(`CANDIDATE'S CURRENT CODE (build on / fix this):\n${params.currentCode.trim()}`);
+  }
+
+  const hasImages = Boolean(params.images && params.images.length);
+  if (hasImages) {
+    userParts.push(
+      `The attached screenshot${
+        (params.images as string[]).length > 1 ? "s show" : " shows"
+      } the problem and possibly the candidate's editor. Read it carefully and solve THAT problem.`
+    );
+  }
+
+  if (!userParts.length) {
+    userParts.push("Solve the coding problem shown in the attached screenshot(s).");
+  }
+
+  return streamText({
+    model: (await getRuntimeConfig()).strongModel,
+    system: buildCodingSystemPrompt(params.language),
+    user: userParts.join("\n\n"),
+    images: params.images,
+    imageDetail: "high",
+    // Correctness over raw speed: think a notch harder than the live-answer tier.
+    reasoningTier: "balanced",
+    // Code + walkthrough can be long; give the body room.
+    maxOutputTokens: 4000,
+    temperature: 0.2,
   });
 }
 

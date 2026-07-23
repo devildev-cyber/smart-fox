@@ -64,6 +64,65 @@ function tokenize(text: string): string[] {
     .filter((t) => t.length > 2 && !STOPWORDS.has(t));
 }
 
+// Interview-intent synonym groups. Plain keyword overlap silently fails on
+// paraphrase — "conflict" shares no token with a story tagged "disagreement" —
+// so we expand the query with related terms before scoring. Every word in a
+// group pulls in the rest.
+const SYNONYM_GROUPS: readonly string[][] = [
+  ["conflict", "disagreement", "disagree", "pushback", "tension", "friction", "clash", "argument"],
+  ["leadership", "lead", "led", "leading", "mentor", "mentored", "manage", "managed", "ownership", "owned", "drove"],
+  ["failure", "failed", "mistake", "setback", "misstep", "wrong"],
+  ["teamwork", "collaborate", "collaboration", "functional", "stakeholder", "partnership", "peers"],
+  ["impact", "result", "results", "outcome", "achievement", "accomplishment", "delivered", "shipped"],
+  ["challenge", "challenging", "difficult", "hard", "obstacle", "hurdle", "tough"],
+  ["weakness", "weak", "struggle", "struggled", "improvement", "shortcoming"],
+  ["deadline", "pressure", "tight", "crunch", "urgent"],
+  ["scale", "scaling", "scalability", "throughput", "volume", "growth"],
+  ["reliability", "reliable", "uptime", "incident", "outage", "resilience"],
+  ["performance", "latency", "optimize", "optimization", "speed", "slow"],
+  ["architecture", "design", "system", "tradeoff", "tradeoffs"],
+  ["adapt", "adapting", "change", "ambiguity", "pivot", "uncertainty"],
+  ["motivation", "motivated", "interested", "company"],
+];
+
+const SYNONYM_INDEX: Map<string, readonly string[]> = (() => {
+  const index = new Map<string, string[]>();
+  for (const group of SYNONYM_GROUPS) {
+    for (const word of group) {
+      const existing = index.get(word) ?? [];
+      for (const other of group) {
+        if (other !== word && !existing.includes(other)) existing.push(other);
+      }
+      index.set(word, existing);
+    }
+  }
+  return index;
+})();
+
+// Expand a query token set with its interview-intent synonyms.
+function expandTokens(tokens: Set<string>): Set<string> {
+  const expanded = new Set(tokens);
+  for (const token of tokens) {
+    const synonyms = SYNONYM_INDEX.get(token);
+    if (synonyms) for (const synonym of synonyms) expanded.add(synonym);
+  }
+  return expanded;
+}
+
+// Meaningful tokens inside a category slug ("handling_conflict" -> conflict),
+// used to boost stories whose category matches the question's intent even when
+// the story text has little lexical overlap.
+function categoryTokens(slug: string): string[] {
+  return slug
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 2 && !STOPWORDS.has(t));
+}
+
+// Added to a story's lexical overlap when its category matches the query
+// intent, so a categorically-correct story outranks an incidental keyword hit.
+const CATEGORY_BOOST = 3;
+
 function overlapScore(query: Set<string>, text: string): number {
   if (query.size === 0) return 0;
   const tokens = tokenize(text);
@@ -124,11 +183,14 @@ export function selectContext(params: {
   } = params;
 
   // Build the query vocabulary from the question plus the JD match keywords,
-  // since those describe what the interviewer is likely probing for.
-  const queryTokens = new Set<string>(tokenize(question));
+  // since those describe what the interviewer is likely probing for, then
+  // expand it with interview-intent synonyms so paraphrased questions still
+  // retrieve the right facts and stories.
+  const baseTokens = new Set<string>(tokenize(question));
   for (const kw of job?.resume_match_keywords ?? []) {
-    for (const t of tokenize(kw)) queryTokens.add(t);
+    for (const t of tokenize(kw)) baseTokens.add(t);
   }
+  const queryTokens = expandTokens(baseTokens);
 
   const resumePool: string[] = [];
   if (candidate) {
@@ -160,13 +222,31 @@ export function selectContext(params: {
   return {
     resumeFacts: rankByOverlap(dedupedResume, queryTokens, (t) => t, maxResumeFacts),
     jdRequirements: rankByOverlap(dedupedJd, queryTokens, (t) => t, maxJdRequirements),
-    stories: rankByOverlap(
-      stories,
-      queryTokens,
-      (s) => `${s.title} ${s.category} ${s.keywords.join(" ")} ${s.shortVersion}`,
-      maxStories
-    ),
+    stories: rankStories(stories, queryTokens, maxStories),
   };
+}
+
+// Rank stories by keyword overlap plus a boost when the story's category
+// matches the question's (expanded) intent — so "tell me about a conflict"
+// surfaces the handling_conflict story even if their wording barely overlaps.
+function rankStories(
+  stories: StoryLike[],
+  query: Set<string>,
+  limit: number
+): StoryLike[] {
+  if (stories.length === 0) return [];
+  const scored = stories.map((story, index) => {
+    const text = `${story.title} ${story.category} ${story.keywords.join(" ")} ${story.shortVersion}`;
+    let score = overlapScore(query, text);
+    const categoryMatches = categoryTokens(story.category).some((t) => query.has(t));
+    if (categoryMatches) score += CATEGORY_BOOST;
+    return { story, index, score };
+  });
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.index - b.index; // stable, preserve original order on ties
+  });
+  return scored.slice(0, limit).map((s) => s.story);
 }
 
 /**
@@ -195,6 +275,7 @@ function renderPositioning(brief: PositioningBrief): string {
       if (p.contributions.length) parts.push(`did: ${p.contributions.slice(0, 5).join("; ")}`);
       if (p.tech.length) parts.push(`tech: ${p.tech.slice(0, 12).join(", ")}`);
       if (p.impact.length) parts.push(`impact: ${p.impact.slice(0, 4).join("; ")}`);
+      if (p.humanPoint) parts.push(`point: ${p.humanPoint}`);
       if (parts.length) lines.push(`- ${parts.join(" | ")}`);
     }
   }
@@ -237,40 +318,18 @@ export function buildAnswerContext(params: {
   const transcript = recentTranscript.slice(-2000).trim();
   const hasExplicitQuestion = Boolean(detectedQuestion.trim());
 
+  // Assembled in two halves. The STABLE half (profile, positioning brief,
+  // resume facts, JD, stories) is identical across turns in a session, so
+  // putting it FIRST lets the model's prompt cache reuse it turn-to-turn. The
+  // VOLATILE half (prior answers, then the ask) changes every turn and goes
+  // LAST — the freshest, most important instruction sits closest to the output,
+  // clearly anchored so attention still lands on it (the system prompt also
+  // tells the model the thing to answer is at the end).
   const parts: string[] = [];
 
-  // The thing to answer ALWAYS comes first. With an explicit question that's the
-  // question; otherwise it's the transcript itself, framed so the model answers
-  // the LATEST utterance (which is at the end) rather than something stale.
-  if (hasExplicitQuestion) {
-    parts.push(`QUESTION TO ANSWER:\n${detectedQuestion}`);
-    if (questionType) parts.push(`QUESTION TYPE: ${questionType}`);
-  } else {
-    const task: string[] = [];
-    if (focusHint) {
-      // The latest turn is handed over explicitly, so we don't rely on "it's at
-      // the end of the transcript". Earlier speech (if any) is background only.
-      task.push(
-        "TASK — answer what the interviewer asks under INTERVIEWER'S LATEST WORDS. If they packed SEVERAL distinct questions or prompts into it, answer EACH (as numbered blocks). A prompt may not end in \"?\". Anything under EARLIER CONTEXT is only there to interpret the ask — do NOT re-answer it. Ignore the candidate's own speech, greetings, and filler."
-      );
-      task.push(`INTERVIEWER'S LATEST WORDS — this is what to answer:\n${focusHint}`);
-      if (transcript) {
-        task.push(`EARLIER CONTEXT (background only, already handled):\n${transcript}`);
-      }
-    } else {
-      // No explicit latest-turn hint: fall back to "the ask is at the end".
-      task.push(
-        "TASK — answer the interviewer's MOST RECENT question or prompt. It's at the END of the transcript; earlier lines are only there to interpret it. If several distinct things were asked, answer each. A prompt may not end in \"?\". Ignore the candidate's own speech, greetings, and filler."
-      );
-      if (transcript) {
-        task.push(`TRANSCRIPT:\n${transcript}`);
-      }
-    }
-    parts.push(task.join("\n\n"));
-  }
-
-  // Strategic positioning comes right after the ask so it frames everything
-  // below. When present it's the primary source of specifics for the answer.
+  // ---- Stable, cacheable prefix ----
+  // Strategic positioning first — when present it's the primary source of
+  // specifics and frames everything else.
   if (params.positioning) {
     parts.push(renderPositioning(params.positioning));
   }
@@ -324,6 +383,7 @@ export function buildAnswerContext(params: {
     parts.push(`RELEVANT APPROVED STORIES:\n${storyText}`);
   }
 
+  // ---- Volatile tail (changes every turn) ----
   const priorTurns = (params.priorTurns ?? []).filter((t) => t.question.trim());
   if (priorTurns.length) {
     const recent = priorTurns.slice(-6);
@@ -335,10 +395,36 @@ export function buildAnswerContext(params: {
     );
   }
 
-  // Only re-show the transcript at the bottom when an explicit question was
-  // given (in one-shot mode it's already shown prominently up top as the ask).
-  if (hasExplicitQuestion && transcript) {
-    parts.push(`RECENT TRANSCRIPT (context only):\n${transcript}`);
+  // The thing to answer comes LAST. With an explicit question that's the
+  // question; otherwise it's the transcript, framed so the model answers the
+  // LATEST utterance (at the end) rather than something stale.
+  if (hasExplicitQuestion) {
+    const ask: string[] = [`=== YOUR TASK (answer this now) ===\n\nQUESTION TO ANSWER:\n${detectedQuestion}`];
+    if (questionType) ask.push(`QUESTION TYPE: ${questionType}`);
+    if (transcript) ask.push(`RECENT TRANSCRIPT (context only):\n${transcript}`);
+    parts.push(ask.join("\n\n"));
+  } else {
+    const task: string[] = ["=== YOUR TASK (answer this now) ==="];
+    if (focusHint) {
+      // The latest turn is handed over explicitly, so we don't rely on "it's at
+      // the end of the transcript". Earlier speech (if any) is background only.
+      task.push(
+        "TASK — answer what the interviewer asks under INTERVIEWER'S LATEST WORDS. If they packed SEVERAL distinct questions or prompts into it, answer EACH (as numbered blocks). A prompt may not end in \"?\". Anything under EARLIER CONTEXT is only there to interpret the ask — do NOT re-answer it. Ignore the candidate's own speech, greetings, and filler."
+      );
+      task.push(`INTERVIEWER'S LATEST WORDS — this is what to answer:\n${focusHint}`);
+      if (transcript) {
+        task.push(`EARLIER CONTEXT (background only, already handled):\n${transcript}`);
+      }
+    } else {
+      // No explicit latest-turn hint: fall back to "the ask is at the end".
+      task.push(
+        "TASK — answer the interviewer's MOST RECENT question or prompt. It's at the END of the transcript; earlier lines are only there to interpret it. If several distinct things were asked, answer each. A prompt may not end in \"?\". Ignore the candidate's own speech, greetings, and filler."
+      );
+      if (transcript) {
+        task.push(`TRANSCRIPT:\n${transcript}`);
+      }
+    }
+    parts.push(task.join("\n\n"));
   }
 
   return parts.join("\n\n");

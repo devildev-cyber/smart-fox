@@ -46,6 +46,27 @@ let pinned = true;
 // Window opacity, cycled from the titlebar. 1 = opaque.
 const OPACITY_STEPS = [1, 0.9, 0.8, 0.7, 0.6];
 let currentOpacity = 0.9;
+// Stealth: exclude the overlay from screen capture / screen share (and hide it
+// from the taskbar). ON by default — it stays fully visible on the physical
+// screen but is invisible to Zoom/Meet/Teams share, OBS, and screenshots. The
+// renderer re-syncs this to the user's persisted setting shortly after load.
+let stealthEnabled = true;
+
+/** Apply the current stealth state to the window (content protection + taskbar). */
+function applyStealth(enabled) {
+  stealthEnabled = Boolean(enabled);
+  if (!mainWindow) return;
+  // setContentProtection -> WDA_EXCLUDEFROMCAPTURE (Windows) / sharingType none (macOS).
+  mainWindow.setContentProtection(stealthEnabled);
+  mainWindow.setSkipTaskbar(stealthEnabled);
+}
+
+/** Flip stealth and notify the renderer so its UI stays in sync (used by hotkey). */
+function toggleStealth() {
+  applyStealth(!stealthEnabled);
+  mainWindow?.webContents.send("stealth-changed", stealthEnabled);
+  return stealthEnabled;
+}
 
 // Append diagnostics to log files so packaged runs are debuggable (the GUI
 // process has no attached console). Written to both userData and the temp dir
@@ -177,6 +198,9 @@ function createWindow() {
   // Start slightly translucent so it blends over the call. Adjustable from the
   // titlebar.
   mainWindow.setOpacity(currentOpacity);
+  // Exclude from screen capture immediately, before the first frame is shown,
+  // so there's never a capturable moment.
+  applyStealth(stealthEnabled);
   if (process.platform !== "win32") {
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   }
@@ -237,6 +261,21 @@ function registerShortcuts() {
     if (mainWindow.isVisible()) mainWindow.hide();
     else mainWindow.show();
   });
+
+  // Toggle stealth (screen-capture exclusion) from anywhere.
+  globalShortcut.register("CommandOrControl+Shift+S", () => {
+    toggleStealth();
+  });
+
+  // Toggle the live-coding copilot panel from anywhere.
+  globalShortcut.register("CommandOrControl+Shift+C", () => {
+    mainWindow?.webContents.send("coding-toggle");
+  });
+
+  // Capture the shared screen into the coding panel from anywhere.
+  globalShortcut.register("CommandOrControl+Shift+2", () => {
+    mainWindow?.webContents.send("coding-capture");
+  });
 }
 
 ipcMain.on("win:minimize", () => mainWindow?.minimize());
@@ -253,6 +292,63 @@ ipcMain.handle("win:cycle-opacity", () => {
   currentOpacity = OPACITY_STEPS[(idx + 1) % OPACITY_STEPS.length];
   mainWindow?.setOpacity(currentOpacity);
   return currentOpacity;
+});
+
+// Stealth (screen-capture exclusion) controls.
+ipcMain.handle("stealth:get", () => stealthEnabled);
+ipcMain.handle("stealth:set", (_e, enabled) => {
+  applyStealth(enabled);
+  // Broadcast so any other UI (e.g. the titlebar shield) stays in sync.
+  mainWindow?.webContents.send("stealth-changed", stealthEnabled);
+  return stealthEnabled;
+});
+ipcMain.handle("stealth:toggle", () => toggleStealth());
+
+/* --------------------------- Live coding capture --------------------------- */
+// Screenshot the shared screen/window for the coding copilot. Because the
+// overlay has content protection ON (stealth), it is excluded from these
+// captures on Windows/macOS — the frame shows what's BEHIND our window, so the
+// candidate can screenshot the problem without capturing the copilot itself.
+
+// List available capture sources (screens + windows) so the candidate picks one
+// once at the start — important for multi-monitor setups. Thumbnails are small
+// (just for the picker); the real capture is taken at higher resolution.
+ipcMain.handle("coding:list-sources", async () => {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ["screen", "window"],
+      thumbnailSize: { width: 320, height: 200 },
+    });
+    return sources.map((s) => ({
+      id: s.id,
+      name: s.name,
+      thumbnail: s.thumbnail.toDataURL(),
+      displayId: s.display_id || "",
+    }));
+  } catch (err) {
+    log("coding:list-sources failed:", err instanceof Error ? err.message : String(err));
+    return [];
+  }
+});
+
+// Capture a fresh, high-resolution frame of the chosen source as a PNG data URL.
+// Falls back to the first screen if the id is stale (e.g. a window closed).
+ipcMain.handle("coding:capture", async (_e, sourceId) => {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ["screen", "window"],
+      thumbnailSize: { width: 2560, height: 1600 },
+    });
+    const src =
+      sources.find((s) => s.id === sourceId) ||
+      sources.find((s) => s.id.startsWith("screen")) ||
+      sources[0];
+    if (!src) return null;
+    return src.thumbnail.toDataURL();
+  } catch (err) {
+    log("coding:capture failed:", err instanceof Error ? err.message : String(err));
+    return null;
+  }
 });
 
 /* --------------------- Windows Live Captions bridge --------------------- */

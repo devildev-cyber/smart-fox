@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { handleRouteError, jsonError, jsonOk, parseBody } from "@/lib/api";
 import { generateStoriesRequestSchema, candidateStructuredSchema } from "@/lib/schemas";
 import { generateStories } from "@/lib/llm-tasks";
-import { serializeStory } from "@/lib/repo";
+import { loadJobStructured, serializeStory } from "@/lib/repo";
 import { safeJsonParse } from "@/lib/utils";
 import { assertAccess } from "@/lib/access";
 
@@ -26,11 +26,16 @@ export async function POST(request: Request) {
       return jsonError("Candidate profile is not analyzed yet. Analyze the resume first.", 422);
     }
 
+    // When a target job is given, plan categories around what an interviewer for
+    // THAT role is likely to probe (best signal); otherwise plan from the resume.
+    const job = await loadJobStructured(data.jobProfileId);
+
     // Categories are planned for this candidate's field/role and skip anything
     // the bank already covers (no hardcoded engineering list).
     const { stories } = await generateStories({
       candidate: parsed.data,
       rawResumeText: candidateRow.rawResumeText,
+      job,
       existingCategories: data.existingCategories,
     });
     if (stories.length === 0) {

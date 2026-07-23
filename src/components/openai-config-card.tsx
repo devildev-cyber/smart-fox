@@ -32,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { apiFetch } from "@/lib/client";
+import { isReasoningModelId } from "@/lib/models";
 
 type ReasoningEffort = "fast" | "balanced" | "thorough";
 
@@ -365,6 +366,15 @@ export function OpenAiConfigCard({
                 recommended={models.recommendedTranscription}
               />
             </div>
+          )}
+
+          {models && isReasoningModelId(fast) && (
+            <p className="text-xs text-warning">
+              Heads up: <code>{fast}</code> is a reasoning model. It thinks before
+              the first word appears, so live answers will be noticeably slower to
+              start. For the live answer slot, prefer a fast non-reasoning model
+              (e.g. a <code>-mini</code> or <code>-chat</code> model).
+            </p>
           )}
 
           {models && (

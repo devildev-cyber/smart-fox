@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { OpenAiConfigCard } from "@/components/openai-config-card";
 import { apiFetch } from "@/lib/client";
+import { getElectronAPI } from "@/lib/electron";
 import { useSettings } from "@/hooks/use-settings";
 import {
   ANSWER_MODE_LABELS,
@@ -268,7 +269,7 @@ export default function SettingsPage() {
                 onChange={(e) =>
                   update({
                     endOfTurnSeconds: clamp(
-                      parseFloat(e.target.value) || 1.8,
+                      parseFloat(e.target.value) || 1.2,
                       0.5,
                       5
                     ),
@@ -336,6 +337,23 @@ export default function SettingsPage() {
             description="Allow the model to bold key terms in answers using markdown."
             checked={settings.boldKeywords}
             onCheckedChange={(v) => update({ boldKeywords: v })}
+            disabled={!hydrated}
+          />
+          <ToggleRow
+            label="Fill in realistic details"
+            description="On (default): where your resume is thin, answers add plausible, consistent specifics so you sound like a real practitioner — always verify before saying them. Off: answers use only facts from your profile, stories, and JD."
+            checked={settings.allowInventedDetails}
+            onCheckedChange={(v) => update({ allowInventedDetails: v })}
+            disabled={!hydrated}
+          />
+          <ToggleRow
+            label="Stealth (hide from screen share)"
+            description="Desktop app only. On (default): the overlay is excluded from screen capture / screen share and hidden from the taskbar — it stays visible on your screen. Toggle anytime with Ctrl/Cmd+Shift+S."
+            checked={settings.stealth}
+            onCheckedChange={(v) => {
+              update({ stealth: v });
+              void getElectronAPI()?.stealth.set(v);
+            }}
             disabled={!hydrated}
           />
         </CardContent>

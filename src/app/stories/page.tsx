@@ -29,12 +29,19 @@ import {
 import { StoryDialog } from "@/components/story-dialog";
 import { apiFetch } from "@/lib/client";
 import { storyCategoryLabel } from "@/lib/constants";
-import type { CandidateProfileDto, ProfilesResponse, StoryDto } from "@/lib/types";
+import type {
+  CandidateProfileDto,
+  JobProfileDto,
+  ProfilesResponse,
+  StoryDto,
+} from "@/lib/types";
 
 export default function StoriesPage() {
   const [stories, setStories] = React.useState<StoryDto[]>([]);
   const [candidates, setCandidates] = React.useState<CandidateProfileDto[]>([]);
   const [selectedCandidate, setSelectedCandidate] = React.useState<string>("");
+  const [jobs, setJobs] = React.useState<JobProfileDto[]>([]);
+  const [selectedJob, setSelectedJob] = React.useState<string>("");
   const [loading, setLoading] = React.useState(true);
   const [generating, setGenerating] = React.useState(false);
   const [improvingId, setImprovingId] = React.useState<string | null>(null);
@@ -52,6 +59,8 @@ export default function StoriesPage() {
       setStories(storyList);
       setCandidates(profiles.candidates);
       setSelectedCandidate((prev) => prev || profiles.candidates[0]?.id || "");
+      setJobs(profiles.jobs);
+      setSelectedJob((prev) => prev || profiles.jobs[0]?.id || "");
     } catch (err) {
       toast.error("Could not load stories", {
         description: err instanceof Error ? err.message : "Unknown error",
@@ -124,6 +133,7 @@ export default function StoriesPage() {
           method: "POST",
           body: JSON.stringify({
             candidateProfileId: selectedCandidate,
+            jobProfileId: selectedJob || undefined,
             existingCategories,
           }),
         }
@@ -172,6 +182,21 @@ export default function StoriesPage() {
                 {candidates.map((c) => (
                   <SelectItem key={c.id} value={c.id}>
                     {c.name || "Unnamed"} — {c.targetTitle || "candidate"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          {jobs.length > 0 && (
+            <Select value={selectedJob} onValueChange={setSelectedJob}>
+              <SelectTrigger className="w-[220px]">
+                <SelectValue placeholder="Target role (optional)" />
+              </SelectTrigger>
+              <SelectContent>
+                {jobs.map((j) => (
+                  <SelectItem key={j.id} value={j.id}>
+                    {j.roleTitle || "Role"}
+                    {j.company ? ` — ${j.company}` : ""}
                   </SelectItem>
                 ))}
               </SelectContent>

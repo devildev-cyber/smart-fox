@@ -64,6 +64,10 @@ export interface BriefProject {
   contributions: string[];
   tech: string[];
   impact: string[];
+  // The one thing the candidate really felt or believed about this work — what
+  // they owned, pushed for, were frustrated or proud about. Gives live answers a
+  // center so they don't sound neutral or generic.
+  humanPoint: string;
 }
 
 const looseProjects = z.any().transform((val): BriefProject[] => {
@@ -71,7 +75,7 @@ const looseProjects = z.any().transform((val): BriefProject[] => {
   return arr
     .map((item): BriefProject => {
       if (typeof item === "string") {
-        return { title: "", what: item.trim(), contributions: [], tech: [], impact: [] };
+        return { title: "", what: item.trim(), contributions: [], tech: [], impact: [], humanPoint: "" };
       }
       if (item && typeof item === "object" && !Array.isArray(item)) {
         const o = item as Record<string, unknown>;
@@ -83,9 +87,17 @@ const looseProjects = z.any().transform((val): BriefProject[] => {
           ),
           tech: toStringArray(o.tech ?? o.stack ?? o.technologies ?? o.tools),
           impact: toStringArray(o.impact ?? o.results ?? o.outcomes ?? o.metrics),
+          humanPoint: firstString(o, [
+            "human_point",
+            "humanPoint",
+            "point",
+            "perspective",
+            "why_it_mattered",
+            "take",
+          ]),
         };
       }
-      return { title: "", what: itemToLabel(item), contributions: [], tech: [], impact: [] };
+      return { title: "", what: itemToLabel(item), contributions: [], tech: [], impact: [], humanPoint: "" };
     })
     .filter(
       (p) =>
@@ -377,6 +389,9 @@ export const generateAnswerRequestSchema = z
     answerLanguage: answerLanguageSchema.default("en"),
     maxSentences: z.number().int().min(1).max(8).default(4),
     boldKeywords: z.boolean().default(false),
+    // When true (default) the model may fill thin spots with realistic,
+    // consistent specifics; false pins it to only what's in the supplied context.
+    allowInventedDetails: z.boolean().default(true),
     // Prior answered turns this session, so the model can reference instead of repeat.
     priorTurns: z.array(priorTurnSchema).default([]),
   })
@@ -401,8 +416,45 @@ export const rewriteAnswerRequestSchema = z.object({
 
 export const generateStoriesRequestSchema = z.object({
   candidateProfileId: z.string().min(1, "A candidate profile is required"),
+  // Optional target role: when provided, story categories are planned to match
+  // what an interviewer for THIS job is likely to probe.
+  jobProfileId: z.string().optional(),
   existingCategories: z.array(z.string()).default([]),
 });
+
+// Live coding copilot. "auto" lets the model infer mode/language from the
+// screenshot + interviewer; the client can pin either.
+export const codingModeRequestSchema = z.enum([
+  "auto",
+  "new",
+  "fix",
+  "optimize",
+  "explain",
+  "test",
+  "answer",
+]);
+export type CodingModeRequest = z.infer<typeof codingModeRequestSchema>;
+
+export const codingSolveRequestSchema = z
+  .object({
+    // Screenshot(s) of the problem / editor as data URLs (png or jpeg base64).
+    // Multiple = scrolled captures or several problems, stitched by the model.
+    images: z.array(z.string()).max(8).default([]),
+    // Optional pasted problem text (clipboard-first when the screen is shared).
+    pastedText: z.string().default(""),
+    // What the interviewer just said (from the live transcript), for intent.
+    transcript: z.string().default(""),
+    language: z.string().default("auto"),
+    mode: codingModeRequestSchema.default("auto"),
+    candidateProfileId: z.string().optional(),
+    // Prior context within the same coding session so follow-ups build on it.
+    priorProblem: z.string().default(""),
+    currentCode: z.string().default(""),
+  })
+  .refine(
+    (d) => d.images.length > 0 || d.pastedText.trim() || d.transcript.trim(),
+    { message: "Provide a screenshot, pasted problem, or some transcript." }
+  );
 
 export const positioningBriefRequestSchema = z.object({
   candidateProfileId: z.string().min(1, "A candidate profile is required"),

@@ -314,6 +314,18 @@ interface StreamTextOptions {
   system: string;
   user: string;
   temperature?: number;
+  /**
+   * Optional image inputs (data URLs or https URLs) for vision tasks like the
+   * coding copilot. When present, the user message becomes a text+image content
+   * array instead of a plain string.
+   */
+  images?: string[];
+  /** Detail level for image inputs. "high" is needed to read code screenshots. */
+  imageDetail?: "auto" | "low" | "high";
+  /** Override the reasoning-effort tier (defaults to the live tier from config). */
+  reasoningTier?: ReasoningEffortTier;
+  /** Override the output-token cap (reasoning models only; others are uncapped). */
+  maxOutputTokens?: number;
 }
 
 /**
@@ -326,59 +338,112 @@ export async function* streamText({
   system,
   user,
   temperature = 0.6,
+  images,
+  imageDetail = "high",
+  reasoningTier,
+  maxOutputTokens,
 }: StreamTextOptions): AsyncGenerator<string> {
   const openai = await getClient();
-  const { reasoningEffort: effortTier } = await getRuntimeConfig();
+  const { reasoningEffort: liveTier } = await getRuntimeConfig();
+  const effortTier = reasoningTier ?? liveTier;
   const reasoning = isReasoningModel(model);
   const pro = isProModel(model);
+
+  // With images, the Responses API needs a structured content array; otherwise
+  // a plain string input is fine (and cheaper to build).
+  const input: OpenAI.Responses.ResponseCreateParamsStreaming["input"] =
+    images && images.length
+      ? [
+          {
+            role: "user",
+            content: [
+              { type: "input_text" as const, text: user },
+              ...images.map((url) => ({
+                type: "input_image" as const,
+                image_url: url,
+                detail: imageDetail,
+              })),
+            ],
+          },
+        ]
+      : user;
 
   const params: OpenAI.Responses.ResponseCreateParamsStreaming = {
     model,
     instructions: system,
-    input: user,
+    input,
     stream: true,
   };
   if (reasoning) {
     params.reasoning = { effort: reasoningEffort(model, effortTier) };
-    // Leave room for reasoning tokens + the spoken answer so the body isn't
-    // starved (reasoning tokens count against the output budget). Pro models
-    // think much harder, so give them more.
-    params.max_output_tokens = pro ? 8000 : 4000;
+    // Leave room for reasoning tokens + the answer body so it isn't starved
+    // (reasoning tokens count against the output budget). Pro models think much
+    // harder, so give them more. Callers can override for longer output (code).
+    params.max_output_tokens = maxOutputTokens ?? (pro ? 8000 : 4000);
   } else {
     params.temperature = temperature;
+    if (maxOutputTokens) params.max_output_tokens = maxOutputTokens;
   }
 
-  // Reasoning models are slower to first token; pro models slower still.
+  // Reasoning models are slower to first token; pro models slower still. Vision
+  // requests (coding screenshots) also need more headroom than the 30s default.
   const requestOptions = pro
     ? { timeout: 300_000 }
     : reasoning
       ? { timeout: 90_000 }
-      : undefined;
+      : images && images.length
+        ? { timeout: 90_000 }
+        : undefined;
 
   const open = () => openai.responses.create(params, requestOptions);
 
-  let stream;
-  try {
-    stream = await open();
-  } catch (err) {
-    // Adjust an unsupported param (temperature / reasoning effort) and retry.
+  // Open the stream, recovering once from an unsupported-param 400 (temperature
+  // / reasoning effort). A transient failure here is retried by the loop below.
+  const openStream = async () => {
     try {
-      stream = await recoverFromParamError(err, params, open);
-    } catch (finalErr) {
-      throw normalizeError(finalErr);
+      return await open();
+    } catch (err) {
+      return recoverFromParamError(err, params, open);
     }
-  }
+  };
 
-  try {
-    for await (const event of stream) {
-      if (event.type === "response.output_text.delta" && event.delta) {
-        yield event.delta;
-      } else if (event.type === "response.failed") {
-        throw new LlmError("The model failed while streaming the answer.", 502);
+  // A dropped connection or transient 429/5xx at the worst possible moment
+  // (mid-interview) shouldn't kill the answer. Retry ONCE, but only while no
+  // token has been emitted yet — once the candidate is reading streamed text we
+  // can't safely restart without duplicating or contradicting what's on screen.
+  let attempt = 0;
+  while (true) {
+    let stream;
+    try {
+      stream = await openStream();
+    } catch (err) {
+      if (attempt === 0 && shouldRetry(err)) {
+        attempt += 1;
+        await delay(500);
+        continue;
       }
+      throw normalizeError(err);
     }
-  } catch (err) {
-    throw normalizeError(err);
+
+    let yieldedAny = false;
+    try {
+      for await (const event of stream) {
+        if (event.type === "response.output_text.delta" && event.delta) {
+          yieldedAny = true;
+          yield event.delta;
+        } else if (event.type === "response.failed") {
+          throw new LlmError("The model failed while streaming the answer.", 502);
+        }
+      }
+      return;
+    } catch (err) {
+      if (!yieldedAny && attempt === 0 && shouldRetry(err)) {
+        attempt += 1;
+        await delay(500);
+        continue;
+      }
+      throw normalizeError(err);
+    }
   }
 }
 
