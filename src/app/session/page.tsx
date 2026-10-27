@@ -13,9 +13,13 @@ import {
   AlertTriangle,
   MonitorSpeaker,
   Info,
+  ChevronLeft,
   ChevronRight,
   Compass,
   Code2,
+  MessageSquareText,
+  MoreHorizontal,
+  Settings2,
 } from "lucide-react";
 import {
   Card,
@@ -39,11 +43,23 @@ import {
 } from "@/components/ui/select";
 import { RichAnswer } from "@/components/rich-answer";
 import { ConfidenceBadge } from "@/components/confidence-badge";
-import { CodingPanel } from "@/components/coding-panel";
+import { CodingView, useCodingCaptureHotkey } from "@/components/coding-view";
+import { HistoryPanel, PrevNav, type FeedItem } from "@/components/session-history";
+import { useCoding, type CodingTurn } from "@/hooks/use-coding";
+import { CODING_MODE_LABELS } from "@/lib/coding";
+import { answersForCoding, codingForAnswers } from "@/lib/session-memory";
+import { cn } from "@/lib/utils";
 import { apiFetch, streamFetch } from "@/lib/client";
 import { parseAnswerStream, answerGist } from "@/lib/answer-stream";
 import { collapseRepeatedText } from "@/lib/caption-reconciler";
-import { styleRiskNote } from "@/lib/answer-style";
+import {
+  TURN_LIMITS,
+  capTurn,
+  endOfTurnDelayMs,
+  lastSentences,
+  latestUtterance,
+  stripConsumedPrefix,
+} from "@/lib/transcript-turn";
 import { getElectronAPI } from "@/lib/electron";
 import { useSettings } from "@/hooks/use-settings";
 import { useDeepgram } from "@/hooks/use-deepgram";
@@ -102,6 +118,7 @@ interface LogEntry {
   question: string;
   answer: string;
   confidence: string;
+  riskNote: string;
   at: number;
 }
 
@@ -140,8 +157,6 @@ export default function SessionPage() {
     React.useState<InterviewStage>("general");
   const [autoAnswer, setAutoAnswer] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
-  // Live-coding copilot overlay.
-  const [codingOpen, setCodingOpen] = React.useState(false);
   // Readiness signal so you know exactly when to press Generate.
   const [questionReady, setQuestionReady] = React.useState(false);
   const [readyConfidence, setReadyConfidence] = React.useState<string>("medium");
@@ -178,6 +193,11 @@ export default function SessionPage() {
   // Mirror of `answer` so async handlers can restore it (e.g. after NO_ANSWER)
   // without depending on stale closure state.
   const answerRef = React.useRef<AnswerResult | null>(null);
+  // Latest copies of the two halves of the session's memory, so each side can
+  // read the other without a hook-ordering knot: spoken answers (`log`) feed the
+  // coding solve; coding turns feed the next spoken answer.
+  const logRef = React.useRef<LogEntry[]>([]);
+  const codingHistoryRef = React.useRef<CodingTurn[]>([]);
 
   React.useEffect(() => {
     answerRef.current = answer;
@@ -297,7 +317,12 @@ export default function SessionPage() {
 
   // A tighter slice (last few sentences) sent to the answer model for speed.
   const recentForAnswer = React.useCallback(
-    () => lastSentences(recentTranscript(), 6),
+    () =>
+      lastSentences(
+        recentTranscript(),
+        TURN_LIMITS.recentSentences,
+        TURN_LIMITS.recentMaxUnits
+      ),
     [recentTranscript]
   );
 
@@ -308,7 +333,7 @@ export default function SessionPage() {
   const pushPriorTurn = React.useCallback((question: string, body: string) => {
     const q = question.trim();
     if (!q) return;
-    const turn: PriorTurnState = { question: q, answerGist: answerGist(body) };
+    const turn: PriorTurnState = { question: q, answerGist: answerGist(body, 700) };
     priorTurnsRef.current = [
       ...priorTurnsRef.current.filter((t) => t.question !== q),
       turn,
@@ -322,6 +347,7 @@ export default function SessionPage() {
         question: result.detected_question.trim() || "(question inferred)",
         answer: result.answer,
         confidence: result.confidence,
+        riskNote: result.risk_note,
         at: Date.now(),
       };
       const next = [entry, ...prev];
@@ -342,13 +368,20 @@ export default function SessionPage() {
       [...fresh.map((f) => f.text), interimRef.current].join(" ").trim()
     );
     if (consumedInterimRef.current) {
-      newText = stripLeadingOverlap(newText, consumedInterimRef.current);
+      newText = stripConsumedPrefix(newText, consumedInterimRef.current);
     }
+    // Bound the turn to whole, most-recent sentences: if nothing was answered
+    // for a while, a long backlog must not bury the actual ask at the end.
+    newText = capTurn(newText);
     const consumedText = all
       .filter((f) => f.seq <= consumedSeqRef.current)
       .map((f) => f.text)
       .join(" ");
-    const context = lastSentences(consumedText, 2);
+    const context = lastSentences(
+      consumedText,
+      TURN_LIMITS.contextSentences,
+      TURN_LIMITS.contextMaxUnits
+    );
     const maxSeq = fresh.length
       ? fresh[fresh.length - 1].seq
       : consumedSeqRef.current;
@@ -412,9 +445,7 @@ export default function SessionPage() {
         }
 
         const finalQuestion = knownQuestion || meta?.detected_question || "";
-        // Prefer the model's own risk note; otherwise fall back to a local,
-        // no-latency style check that flags banned corporate filler.
-        const riskNote = (meta?.risk_note ?? "").trim() || styleRiskNote(body);
+        const riskNote = (meta?.risk_note ?? "").trim();
         const result: AnswerResult = {
           detected_question: finalQuestion,
           answer: body,
@@ -463,7 +494,11 @@ export default function SessionPage() {
       } else if (opts.wide) {
         // Regenerate / recovery: re-read a wider window and ignore the marker so
         // a wrong boundary or mis-click can be corrected. Point at the tail.
-        transcript = lastSentences(recentTranscript(), 8);
+        transcript = lastSentences(
+          recentTranscript(),
+          TURN_LIMITS.wideSentences,
+          TURN_LIMITS.wideMaxUnits
+        );
         focusHint = latestUtterance(transcript);
       } else {
         // Normal flow: the interviewer's latest TURN is everything new since the
@@ -512,6 +547,7 @@ export default function SessionPage() {
             boldKeywords: settings.boldKeywords,
             allowInventedDetails: settings.allowInventedDetails,
             priorTurns: priorTurnsRef.current,
+            codingContext: codingForAnswers(codingHistoryRef.current),
           },
           question
         );
@@ -614,13 +650,6 @@ export default function SessionPage() {
     }
   }, []);
 
-  // Keep the transcript scrolled to the newest line.
-  const transcriptScrollRef = React.useRef<HTMLDivElement | null>(null);
-  React.useEffect(() => {
-    const el = transcriptScrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [finals, interim]);
-
   const [captureSource, setCaptureSource] = React.useState<CaptureChoice>("microphone");
 
   // Live Captions is only available in the Windows desktop build. Resolved
@@ -709,14 +738,20 @@ export default function SessionPage() {
     // They're talking again, so it's not the moment yet.
     setQuestionReady(false);
     if (endOfTurnTimer.current) clearTimeout(endOfTurnTimer.current);
-    endOfTurnTimer.current = setTimeout(
-      () => handleEndOfTurnRef.current(),
-      endOfTurnMs
-    );
+    // The pause is adaptive: sooner after a finished question, longer when the
+    // text trails off with no punctuation (they're likely still mid-thought),
+    // and never for bare filler ("okay", "right").
+    const delay = endOfTurnDelayMs(buildDelta().newText, endOfTurnMs);
+    if (delay !== null) {
+      endOfTurnTimer.current = setTimeout(
+        () => handleEndOfTurnRef.current(),
+        delay
+      );
+    }
     return () => {
       if (endOfTurnTimer.current) clearTimeout(endOfTurnTimer.current);
     };
-  }, [finals, interim, isRecording, endOfTurnMs]);
+  }, [finals, interim, isRecording, endOfTurnMs, buildDelta]);
 
   const addManualCaption = () => {
     const text = manualCaption.trim();
@@ -814,6 +849,163 @@ export default function SessionPage() {
   const autoAnswerRef = React.useRef(autoAnswer);
   autoAnswerRef.current = autoAnswer;
 
+  /* ------------------------ Coding + earlier answers ------------------------ */
+
+  // The coding copilot lives INSIDE the session: same transcript, same hotkeys,
+  // same window. Its state is lifted here so it survives switching tabs.
+  const getSessionContext = React.useCallback(() => answersForCoding(logRef.current), []);
+  const coding = useCoding({
+    candidateId: candidateId || undefined,
+    getTranscript: recentTranscript,
+    getSessionContext,
+    useBaseModel: settings.codingBaseModel,
+  });
+  logRef.current = log;
+  codingHistoryRef.current = coding.history;
+  const [tab, setTab] = React.useState<"answer" | "code">("answer");
+  const tabRef = React.useRef(tab);
+  tabRef.current = tab;
+  const [showSetup, setShowSetup] = React.useState(false);
+  const [showHistory, setShowHistory] = React.useState(false);
+  const [showMore, setShowMore] = React.useState(false);
+  // null = the live (latest) answer; otherwise the id of an earlier one.
+  const [viewLogId, setViewLogId] = React.useState<string | null>(null);
+  const [answerBadge, setAnswerBadge] = React.useState(false);
+  const [codeBadge, setCodeBadge] = React.useState(false);
+
+  // Setup opens by itself until there is a candidate and a job to answer as.
+  React.useEffect(() => {
+    if (config && (candidates.length === 0 || jobs.length === 0)) setShowSetup(true);
+  }, [config, candidates.length, jobs.length]);
+
+  // A new run jumps back to the latest answer.
+  React.useEffect(() => {
+    if (generating) setViewLogId(null);
+  }, [generating]);
+
+  // A dot on the tab you are not looking at when something new lands there.
+  const latestAnswerId = log[0]?.id;
+  const seenAnswerId = React.useRef(latestAnswerId);
+  React.useEffect(() => {
+    if (latestAnswerId === seenAnswerId.current) return;
+    seenAnswerId.current = latestAnswerId;
+    if (latestAnswerId && tabRef.current === "code") setAnswerBadge(true);
+  }, [latestAnswerId]);
+  const latestCodeId = coding.history[0]?.id;
+  const seenCodeId = React.useRef(latestCodeId);
+  React.useEffect(() => {
+    if (latestCodeId === seenCodeId.current) return;
+    seenCodeId.current = latestCodeId;
+    if (latestCodeId && tabRef.current === "answer") setCodeBadge(true);
+  }, [latestCodeId]);
+  React.useEffect(() => {
+    if (tab === "answer") setAnswerBadge(false);
+    else setCodeBadge(false);
+  }, [tab]);
+
+  // Stepping through earlier answers. The newest finished answer IS the live
+  // one, so "earlier" from live starts one back (or at the newest while a new
+  // answer is still streaming and not yet in the list).
+  const answerPos = viewLogId ? log.findIndex((e) => e.id === viewLogId) : -1;
+  const answerBase = generating ? 0 : 1;
+  const canOlderAnswer =
+    answerPos === -1 ? log.length > answerBase : answerPos + 1 < log.length;
+  const stepAnswer = (dir: 1 | -1) => {
+    if (dir === 1) {
+      const next = answerPos === -1 ? answerBase : answerPos + 1;
+      if (next < log.length) setViewLogId(log[next].id);
+    } else if (answerPos !== -1) {
+      const next = answerPos - 1;
+      setViewLogId(next < answerBase ? null : log[next].id);
+    }
+  };
+
+  const codePos = coding.activeTurnId
+    ? coding.history.findIndex((t) => t.id === coding.activeTurnId)
+    : -1;
+  const codeBase = coding.solving ? 0 : 1;
+  const canOlderCode =
+    codePos === -1 ? coding.history.length > codeBase : codePos + 1 < coding.history.length;
+  const stepCode = (dir: 1 | -1) => {
+    if (dir === 1) {
+      const next = codePos === -1 ? codeBase : codePos + 1;
+      if (next < coding.history.length) coding.selectTurn(coding.history[next].id);
+    } else if (codePos !== -1) {
+      const next = codePos - 1;
+      coding.selectTurn(next < codeBase ? null : coding.history[next].id);
+    }
+  };
+
+  const navRef = React.useRef<(dir: 1 | -1) => void>(() => {});
+  navRef.current = (dir) => (tab === "code" ? stepCode(dir) : stepAnswer(dir));
+
+  // One list of everything answered this session, newest first.
+  const feed: FeedItem[] = [
+    ...log.map((e) => ({
+      id: e.id,
+      kind: "answer" as const,
+      title: e.question,
+      at: e.at,
+    })),
+    ...coding.history.map((t) => ({
+      id: t.id,
+      kind: "code" as const,
+      title: t.title,
+      at: t.at,
+      tag: t.solution.mode ? CODING_MODE_LABELS[t.solution.mode] : undefined,
+    })),
+  ].sort((a, b) => b.at - a.at);
+
+  const openFeedItem = (item: FeedItem) => {
+    if (item.kind === "answer") {
+      const idx = log.findIndex((e) => e.id === item.id);
+      setViewLogId(idx < answerBase ? null : item.id);
+      setTab("answer");
+    } else {
+      const idx = coding.history.findIndex((t) => t.id === item.id);
+      coding.selectTurn(idx < codeBase ? null : item.id);
+      setTab("code");
+    }
+    setShowHistory(false);
+  };
+
+  // The main action follows the tab you are on. From the global hotkey (the
+  // call window has focus) on the Code tab, grab the screen and solve.
+  const quickSolve = async () => {
+    if (coding.solving) return;
+    try {
+      if (coding.images.length > 0 && !coding.solution) await coding.solve();
+      else await coding.captureAndSolve();
+    } catch (err) {
+      toast.error("Capture failed", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  };
+  const primaryRef = React.useRef<(fromGlobal: boolean) => void>(() => {});
+  primaryRef.current = (fromGlobal) => {
+    if (tabRef.current !== "code") {
+      void generateRef.current(settings.defaultAnswerMode);
+      return;
+    }
+    const hasInputs =
+      coding.images.length > 0 ||
+      coding.pastedText.trim().length > 0 ||
+      coding.ask.trim().length > 0;
+    if (!fromGlobal && hasInputs && !coding.solving) void coding.solve();
+    else void quickSolve();
+  };
+
+  // Electron capture hotkey: grab the screen and show it on the Code tab.
+  useCodingCaptureHotkey(() => {
+    setTab("code");
+    void coding.capture().catch((err) =>
+      toast.error("Capture failed", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      })
+    );
+  });
+
   // Runs when the interviewer pauses (end of turn). In auto mode it generates a
   // one-shot answer (the model infers the question itself); otherwise it just
   // signals that now is a good time to press Generate — no LLM call, no waiting.
@@ -832,12 +1024,24 @@ export default function SessionPage() {
 
   React.useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Alt+←/→ flips through earlier answers (older / newer).
+      if (
+        e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        (e.key === "ArrowLeft" || e.key === "ArrowRight")
+      ) {
+        e.preventDefault();
+        navRef.current(e.key === "ArrowLeft" ? 1 : -1);
+        return;
+      }
+
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
 
       if (!e.shiftKey && e.key === "Enter") {
         e.preventDefault();
-        void generateRef.current(settings.defaultAnswerMode);
+        primaryRef.current(false);
         return;
       }
       if (e.shiftKey) {
@@ -865,450 +1069,559 @@ export default function SessionPage() {
   React.useEffect(() => {
     const api = getElectronAPI();
     if (!api) return;
-    return api.onGenerate(() => {
-      void generateRef.current(settings.defaultAnswerMode);
-    });
-  }, [settings.defaultAnswerMode]);
+    return api.onGenerate(() => primaryRef.current(true));
+  }, []);
 
-  // Global hotkey (Ctrl/Cmd+Shift+C) to toggle the live-coding copilot.
+  // Global hotkey (Ctrl/Cmd+Shift+C) flips between the Answer and Code views.
   React.useEffect(() => {
     const api = getElectronAPI();
     if (!api?.coding) return;
-    return api.coding.onToggle(() => setCodingOpen((v) => !v));
+    return api.coding.onToggle(() => setTab((t) => (t === "code" ? "answer" : "code")));
   }, []);
 
   const openaiMissing = config && !config.openaiConfigured;
+  const canRecord = Boolean(config?.transcriptionAvailable || liveCaptionsAvailable);
 
-  return (
-    <div className="space-y-4">
-      {codingOpen && (
-        <CodingPanel
-          onClose={() => setCodingOpen(false)}
-          candidateId={candidateId || undefined}
-          getTranscript={recentTranscript}
-        />
-      )}
-      {/* Top bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight">Live session</h1>
-          <p className="text-sm text-muted-foreground">
-            Capture the interviewer and stream a spoken answer in real time.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant={codingOpen ? "default" : "outline"}
-            size="sm"
-            onClick={() => setCodingOpen((v) => !v)}
-            title="Live-coding copilot (Ctrl/Cmd+Shift+C)"
+  const viewedEntry = viewLogId ? (log.find((e) => e.id === viewLogId) ?? null) : null;
+  const shown = viewedEntry
+    ? {
+        question: viewedEntry.question,
+        text: viewedEntry.answer,
+        confidence: viewedEntry.confidence,
+        risk: viewedEntry.riskNote,
+      }
+    : answer
+      ? {
+          question: answer.detected_question,
+          text: answer.answer,
+          confidence: answer.confidence,
+          risk: answer.risk_note,
+        }
+      : null;
+
+  const readyGlow = questionReady && !generating;
+
+  const answerPane = (
+    <div className="space-y-3">
+      <Card className={readyGlow ? "border-success/60 shadow-[0_0_0_1px_hsl(var(--success))]" : "border-primary/30"}>
+        <CardHeader className="flex-row items-center justify-between space-y-0 px-3 py-2">
+          <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
+            <span className="whitespace-nowrap">{viewedEntry ? "Earlier" : "Answer"}</span>
+            {shown && (
+              <ConfidenceBadge
+                confidence={shown.confidence}
+                className="whitespace-nowrap px-2 py-0 text-[10px]"
+              />
+            )}
+          </CardTitle>
+          <PrevNav
+            label={viewedEntry ? `${log.length - answerPos} / ${log.length}` : "Latest"}
+            canOlder={canOlderAnswer}
+            canNewer={viewedEntry !== null}
+            onOlder={() => stepAnswer(1)}
+            onNewer={() => stepAnswer(-1)}
+            onOpenHistory={() => setShowHistory((v) => !v)}
+            historyCount={feed.length}
+          />
+        </CardHeader>
+        <CardContent className="space-y-2 px-3 pb-3 pt-0">
+          {viewedEntry && (
+            <button
+              type="button"
+              onClick={() => setViewLogId(null)}
+              className="flex w-full items-center gap-1.5 rounded-md border bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" /> Back to the latest answer
+            </button>
+          )}
+          {shown?.question && (
+            <div className="rounded-md border-l-2 border-primary/50 bg-secondary/30 px-2.5 py-1">
+              <p className="text-sm font-semibold leading-snug">{shown.question}</p>
+            </div>
+          )}
+          <div
+            className={`min-h-[96px] rounded-md bg-secondary/40 p-2.5 leading-relaxed ${
+              ANSWER_FONT_SIZE_CLASS[settings.answerFontSize] ?? "text-base"
+            }`}
           >
-            <Code2 className="h-4 w-4" /> Coding
-          </Button>
-          <SessionStatus sessionId={sessionId} recording={isRecording} />
-        </div>
-      </div>
-
-      {openaiMissing && (
-        <Banner>
-          OpenAI API key is not configured. Add <code>OPENAI_API_KEY</code> to your{" "}
-          <code>.env</code> to enable live answers.
-        </Banner>
-      )}
-
-      {/* Context selectors */}
-      <Card>
-        <CardContent className="grid gap-4 p-4 md:grid-cols-3">
-          <div className="space-y-1.5">
-            <Label>Candidate profile</Label>
-            <Select value={candidateId} onValueChange={setCandidateId}>
-              <SelectTrigger>
-                <SelectValue placeholder="None" />
-              </SelectTrigger>
-              <SelectContent>
-                {candidates.length === 0 && (
-                  <SelectItem value="none" disabled>
-                    No profiles — add one on Setup
-                  </SelectItem>
-                )}
-                {candidates.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name || "Unnamed"} — {c.targetTitle || "candidate"}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {shown && shown.text ? (
+              <RichAnswer text={shown.text} />
+            ) : generating ? (
+              <GeneratingState />
+            ) : (
+              <span className="text-sm text-muted-foreground">
+                Press Generate (⌘/Ctrl + Enter) when the interviewer finishes asking.
+              </span>
+            )}
           </div>
-          <div className="space-y-1.5">
-            <Label>Job profile</Label>
-            <Select value={jobId} onValueChange={setJobId}>
-              <SelectTrigger>
-                <SelectValue placeholder="None" />
-              </SelectTrigger>
-              <SelectContent>
-                {jobs.length === 0 && (
-                  <SelectItem value="none" disabled>
-                    No jobs — add one on Setup
-                  </SelectItem>
-                )}
-                {jobs.map((j) => (
-                  <SelectItem key={j.id} value={j.id}>
-                    {j.roleTitle || "Role"} @ {j.company || "company"}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="session-title">Session title</Label>
-            <Input
-              id="session-title"
-              value={sessionTitle}
-              onChange={(e) => setSessionTitle(e.target.value)}
-              placeholder="e.g. Meridian — backend screen"
-            />
-          </div>
+          {shown?.risk && (
+            <div className="flex items-start gap-2 rounded-md bg-warning/10 px-2.5 py-1.5 text-xs text-warning">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{shown.risk}</span>
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      <PositioningBriefCard
-        brief={positioning}
-        loading={briefLoading}
-        building={briefBuilding}
-        disabled={!candidateId || !jobId}
-        onBuild={() => void buildBrief()}
-      />
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        {/* Left panel */}
-        <div className="space-y-4">
-          <Card>
-            <CardHeader className="flex-row items-center justify-between space-y-0">
-              <CardTitle className="flex items-center gap-2 text-base">
-                Live transcript
-                {isRecording && (
-                  <span className="flex items-center gap-1 text-xs font-normal text-destructive">
-                    <span className="h-2 w-2 animate-pulse-dot rounded-full bg-destructive" />
-                    recording
-                  </span>
-                )}
-              </CardTitle>
-              <div className="flex items-center gap-2">
-                {(config?.transcriptionAvailable || liveCaptionsAvailable) && (
-                  <>
-                    <Select
-                      value={captureSource}
-                      onValueChange={(v) => setCaptureSource(v as CaptureChoice)}
-                      disabled={isRecording || isStarting}
-                    >
-                      <SelectTrigger className="h-8 w-[170px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {liveCaptionsAvailable && (
-                          <SelectItem value="livecaption">
-                            Windows Live Captions
-                          </SelectItem>
-                        )}
-                        {config?.transcriptionAvailable && (
-                          <>
-                            <SelectItem value="microphone">Microphone</SelectItem>
-                            <SelectItem value="display">Meeting tab audio</SelectItem>
-                            <SelectItem value="both">Mic + meeting audio</SelectItem>
-                          </>
-                        )}
-                      </SelectContent>
-                    </Select>
-                    {isRecording ? (
-                      <Button size="sm" variant="destructive" onClick={stopRecording}>
-                        <Square className="h-4 w-4" /> Stop
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={startRecording}
-                        disabled={isStarting}
-                      >
-                        {isStarting ? (
-                          <Spinner />
-                        ) : captureSource === "display" ? (
-                          <MonitorSpeaker className="h-4 w-4" />
-                        ) : (
-                          <Mic className="h-4 w-4" />
-                        )}
-                        Record
-                      </Button>
-                    )}
-                  </>
-                )}
-                <Button size="sm" variant="ghost" onClick={clearTranscript}>
-                  <Eraser className="h-4 w-4" /> Clear
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {!config?.transcriptionAvailable && !liveCaptionsAvailable ? (
-                <p className="rounded-md bg-secondary/60 px-3 py-2 text-xs text-muted-foreground">
-                  Live audio is off (no OpenAI or Deepgram key). Use the caption box below
-                  to paste what the interviewer says.
-                </p>
-              ) : (
-                <CaptureHint
-                  source={captureSource}
-                  engine={
-                    isLiveCaptions
-                      ? "Live Captions"
-                      : useDeepgramEngine
-                        ? "Deepgram"
-                        : "OpenAI"
-                  }
-                />
-              )}
-              <div
-                ref={transcriptScrollRef}
-                className="h-44 overflow-y-auto rounded-md border border-border bg-background/50 p-3 text-sm leading-relaxed scrollbar-thin"
-              >
-                {finals.length === 0 && !interim ? (
-                  <span className="text-muted-foreground">
-                    Transcript will appear here…
-                  </span>
-                ) : (
-                  <>
-                    {finals.map((f, i) => (
-                      <span key={i}>{f.text} </span>
-                    ))}
-                    {interim && <span className="text-muted-foreground">{interim}</span>}
-                  </>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="manual-caption">Manual caption paste</Label>
-                <Textarea
-                  id="manual-caption"
-                  value={manualCaption}
-                  onChange={(e) => setManualCaption(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                      e.preventDefault();
-                      addManualCaption();
-                    }
-                  }}
-                  placeholder="Paste interviewer captions, then Add (or ⌘/Ctrl+Enter)…"
-                  className="min-h-[60px]"
-                />
-                <Button size="sm" variant="outline" onClick={addManualCaption}>
-                  Add to transcript
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="space-y-1">
-              <CardTitle className="text-base">Ask a specific question (optional)</CardTitle>
-              <CardDescription>
-                Leave blank to let Generate answer whatever the interviewer just
-                asked. Type here to answer one exact question instead.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Textarea
-                value={detectedQuestion}
-                onChange={(e) => setDetectedQuestion(e.target.value)}
-                placeholder="e.g. Walk me through a system you designed for scale…"
-                className="min-h-[70px] text-base"
-              />
-            </CardContent>
-          </Card>
+      <div className="space-y-1.5">
+        <div className="flex gap-1.5">
+          <Button
+            size="sm"
+            className={cn("flex-1", readyGlow && "animate-pulse-dot")}
+            onClick={() => void generate(settings.defaultAnswerMode)}
+            disabled={generating}
+          >
+            <Sparkles className="h-4 w-4" /> Generate
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => void rewrite("shorter")} disabled={generating || viewedEntry !== null}>
+            Shorter
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => void rewrite("human")} disabled={generating || viewedEntry !== null}>
+            Human
+          </Button>
+          <Button
+            size="icon"
+            variant={showMore ? "secondary" : "ghost"}
+            className="h-8 w-8 shrink-0"
+            onClick={() => setShowMore((v) => !v)}
+            aria-expanded={showMore}
+            aria-label="More actions"
+            title="More actions"
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </Button>
         </div>
+        {showMore && (
+          <div className="flex flex-wrap gap-1.5">
+            <Button size="sm" variant="outline" onClick={() => void rewrite("technical")} disabled={generating || viewedEntry !== null}>
+              Technical
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => void rewrite("more_senior")} disabled={generating || viewedEntry !== null}>
+              More senior
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => void rewrite("safer")} disabled={generating || viewedEntry !== null}>
+              Safer
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => void generate("follow_up")} disabled={generating}>
+              Predict follow-up
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => void generate(lastMode, { wide: true })} disabled={generating}>
+              <RefreshCw className="h-4 w-4" /> Regenerate
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => void saveTurn()} disabled={saving || !answer}>
+              {saving ? <Spinner /> : <Save className="h-4 w-4" />} Save turn
+            </Button>
+          </div>
+        )}
+        <Input
+          value={detectedQuestion}
+          onChange={(e) => setDetectedQuestion(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !generating) {
+              e.preventDefault();
+              void generate(settings.defaultAnswerMode);
+            }
+          }}
+          placeholder="Or type the exact question and press Enter"
+          className="h-8 text-xs"
+          aria-label="Answer a specific question"
+        />
+      </div>
 
-        {/* Right panel */}
-        <div className="space-y-4">
+      <TranscriptStrip
+        finals={finals}
+        interim={interim}
+        recording={isRecording}
+        onClear={clearTranscript}
+      />
+    </div>
+  );
+
+  const lastEntry = log[0] ?? null;
+  const codePane = (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <span className="flex-1 truncate text-sm font-semibold">
+          {coding.viewingHistory ? "Earlier coding answer" : "Coding copilot"}
+        </span>
+        <PrevNav
+          label={coding.viewingHistory ? `${coding.history.length - codePos} / ${coding.history.length}` : "Latest"}
+          canOlder={canOlderCode}
+          canNewer={coding.viewingHistory}
+          onOlder={() => stepCode(1)}
+          onNewer={() => stepCode(-1)}
+          onOpenHistory={() => setShowHistory((v) => !v)}
+          historyCount={feed.length}
+        />
+      </div>
+
+      {/* The spoken answer stays in reach while you code */}
+      {(lastEntry || generating) && (
+        <details className="group rounded-lg border bg-card">
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs [&::-webkit-details-marker]:hidden">
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+            <span className="shrink-0 font-medium text-muted-foreground">Last answer</span>
+            <span className="line-clamp-1 min-w-0 flex-1">
+              {generating ? "Writing a new one…" : lastEntry?.question}
+            </span>
+          </summary>
+          <div className="max-h-52 overflow-y-auto border-t px-3 py-2 text-sm scrollbar-thin">
+            {answer?.answer ? <RichAnswer text={answer.answer} /> : lastEntry ? <RichAnswer text={lastEntry.answer} /> : null}
+          </div>
+        </details>
+      )}
+
+      <CodingView c={coding} active={tab === "code"} />
+
+      <div className="lg:hidden">
+        <TranscriptStrip
+          finals={finals}
+          interim={interim}
+          recording={isRecording}
+          onClear={clearTranscript}
+        />
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-3">
+      {/* Top bar: status, record, setup, tabs */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-1.5">
           <LiveStatus
             recording={isRecording}
             transcribing={openaiStt.processing}
             generating={generating}
             questionReady={questionReady}
             readyConfidence={readyConfidence}
+            coding={coding.solving}
           />
-
-          <Card
-            className={
-              questionReady && !generating
-                ? "border-success/60 shadow-[0_0_0_1px_hsl(var(--success))]"
-                : "border-primary/30"
-            }
-          >
-            <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
-              <CardTitle className="text-sm">Your answer</CardTitle>
-              {answer && <ConfidenceBadge confidence={answer.confidence} />}
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {answer?.detected_question && (
-                <div className="rounded-md border-l-2 border-primary/50 bg-secondary/30 px-3 py-1.5">
-                  <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Question
-                  </p>
-                  <p className="text-sm font-semibold leading-snug">
-                    {answer.detected_question}
-                  </p>
-                </div>
-              )}
-              <div
-                className={`min-h-[96px] rounded-md bg-secondary/40 p-2.5 leading-relaxed ${
-                  ANSWER_FONT_SIZE_CLASS[settings.answerFontSize] ?? "text-base"
-                }`}
+          {canRecord &&
+            (isRecording ? (
+              <Button size="sm" variant="destructive" className="h-8 shrink-0" onClick={stopRecording}>
+                <Square className="h-4 w-4" /> Stop
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-8 shrink-0"
+                onClick={startRecording}
+                disabled={isStarting}
               >
-                {answer && answer.answer ? (
-                  <RichAnswer text={answer.answer} />
-                ) : generating ? (
-                  <GeneratingState />
-                ) : (
-                  <span className="text-sm text-muted-foreground">
-                    Generate an answer with ⌘/Ctrl + Enter, or the buttons below.
-                  </span>
-                )}
-              </div>
+                {isStarting ? <Spinner /> : <Mic className="h-4 w-4" />} Record
+              </Button>
+            ))}
+          <Button
+            size="icon"
+            variant={showSetup ? "secondary" : "ghost"}
+            className="h-8 w-8 shrink-0"
+            onClick={() => setShowSetup((v) => !v)}
+            aria-expanded={showSetup}
+            aria-label="Session setup"
+            title="Session setup"
+          >
+            <Settings2 className="h-4 w-4" />
+          </Button>
+        </div>
 
-              {answer?.risk_note && (
-                <div className="flex items-start gap-2 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span>{answer.risk_note}</span>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+        <div className="grid grid-cols-2 gap-1 rounded-lg bg-secondary/50 p-1 lg:hidden" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "answer"}
+            onClick={() => setTab("answer")}
+            className={cn(
+              "flex items-center justify-center gap-1.5 rounded-md py-1.5 text-sm font-medium transition-colors",
+              tab === "answer" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <MessageSquareText className="h-4 w-4" /> Answer
+            {answerBadge && <span className="h-2 w-2 rounded-full bg-success" aria-label="New answer" />}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "code"}
+            onClick={() => setTab("code")}
+            className={cn(
+              "flex items-center justify-center gap-1.5 rounded-md py-1.5 text-sm font-medium transition-colors",
+              tab === "code" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <Code2 className="h-4 w-4" /> Code
+            {coding.solving ? (
+              <Spinner className="h-3 w-3" />
+            ) : (
+              codeBadge && <span className="h-2 w-2 rounded-full bg-success" aria-label="New coding answer" />
+            )}
+          </button>
+        </div>
+      </div>
 
-          <Card>
-            <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
-              <CardTitle className="text-sm">Controls</CardTitle>
-              <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-                Auto-answer
-                <Switch checked={autoAnswer} onCheckedChange={setAutoAnswer} />
-              </label>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Interview stage</Label>
-                <Select
-                  value={interviewStage}
-                  onValueChange={(v) => setInterviewStage(v as InterviewStage)}
-                >
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {interviewStageSchema.options.map((s) => (
-                      <SelectItem key={s} value={s}>
-                        {INTERVIEW_STAGE_LABELS[s]} — {INTERVIEW_STAGE_HINTS[s]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  onClick={() => void generate(settings.defaultAnswerMode)}
-                  disabled={generating}
-                  className={questionReady && !generating ? "animate-pulse-dot" : ""}
-                >
-                  <Sparkles className="h-4 w-4" /> Generate
-                </Button>
-                <Button variant="outline" onClick={() => void rewrite("shorter")} disabled={generating}>
-                  Shorter
-                </Button>
-                <Button variant="outline" onClick={() => void rewrite("more_senior")} disabled={generating}>
-                  More senior
-                </Button>
-                <Button variant="outline" onClick={() => void rewrite("star")} disabled={generating}>
-                  STAR
-                </Button>
-                <Button variant="outline" onClick={() => void rewrite("technical")} disabled={generating}>
-                  Technical
-                </Button>
-                <Button variant="outline" onClick={() => void rewrite("human")} disabled={generating}>
-                  Human
-                </Button>
-                <Button variant="outline" onClick={() => void rewrite("safer")} disabled={generating}>
-                  Safer
-                </Button>
-                <Button variant="outline" onClick={() => void generate("follow_up")} disabled={generating}>
-                  Predict follow-up
-                </Button>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  variant="ghost"
-                  onClick={() => void generate(lastMode, { wide: true })}
-                  disabled={generating}
-                >
-                  <RefreshCw className="h-4 w-4" /> Regenerate
-                </Button>
-                <Button variant="secondary" onClick={() => void saveTurn()} disabled={saving || !answer}>
-                  {saving ? <Spinner /> : <Save className="h-4 w-4" />} Save turn
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+      {openaiMissing && (
+        <Banner>
+          OpenAI API key is not configured. Add it on the <strong>Settings</strong> page to
+          enable live answers.
+        </Banner>
+      )}
 
-          {log.length > 0 && (
-            <Card>
-              <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm">Answer log ({log.length})</CardTitle>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => setLog([])}
-                >
-                  Clear
-                </Button>
-              </CardHeader>
-              <CardContent className="max-h-72 space-y-1.5 overflow-y-auto">
-                {log.map((e) => (
-                  <details
-                    key={e.id}
-                    className="group rounded-md border border-border bg-secondary/20 px-2.5 py-1.5"
-                  >
-                    <summary className="flex cursor-pointer list-none items-center gap-2 text-xs [&::-webkit-details-marker]:hidden">
-                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-                      <span className="line-clamp-1 font-medium">{e.question}</span>
-                    </summary>
-                    <div className="mt-1.5 border-t border-border pt-1.5 text-sm">
-                      <RichAnswer text={e.answer} />
-                    </div>
-                  </details>
-                ))}
-              </CardContent>
-            </Card>
+      {showSetup && (
+        <SetupPanel>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Candidate profile</Label>
+              <Select value={candidateId} onValueChange={setCandidateId}>
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="None" />
+                </SelectTrigger>
+                <SelectContent>
+                  {candidates.length === 0 && (
+                    <SelectItem value="none" disabled>
+                      No profiles — add one on Setup
+                    </SelectItem>
+                  )}
+                  {candidates.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name || "Unnamed"} — {c.targetTitle || "candidate"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Job profile</Label>
+              <Select value={jobId} onValueChange={setJobId}>
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="None" />
+                </SelectTrigger>
+                <SelectContent>
+                  {jobs.length === 0 && (
+                    <SelectItem value="none" disabled>
+                      No jobs — add one on Setup
+                    </SelectItem>
+                  )}
+                  {jobs.map((j) => (
+                    <SelectItem key={j.id} value={j.id}>
+                      {j.roleTitle || "Role"} @ {j.company || "company"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="session-title">Session title</Label>
+              <Input
+                id="session-title"
+                value={sessionTitle}
+                onChange={(e) => setSessionTitle(e.target.value)}
+                placeholder="e.g. Meridian — backend screen"
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Interview stage</Label>
+              <Select
+                value={interviewStage}
+                onValueChange={(v) => setInterviewStage(v as InterviewStage)}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {interviewStageSchema.options.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {INTERVIEW_STAGE_LABELS[s]} — {INTERVIEW_STAGE_HINTS[s]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <label className="flex cursor-pointer items-center justify-between gap-2 text-sm">
+            <span>
+              Auto-answer
+              <span className="block text-xs text-muted-foreground">
+                Answer on its own when the interviewer pauses
+              </span>
+            </span>
+            <Switch checked={autoAnswer} onCheckedChange={setAutoAnswer} />
+          </label>
+
+          {canRecord && (
+            <div className="space-y-1.5">
+              <Label>Audio source</Label>
+              <Select
+                value={captureSource}
+                onValueChange={(v) => setCaptureSource(v as CaptureChoice)}
+                disabled={isRecording || isStarting}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {liveCaptionsAvailable && (
+                    <SelectItem value="livecaption">Windows Live Captions</SelectItem>
+                  )}
+                  {config?.transcriptionAvailable && (
+                    <>
+                      <SelectItem value="microphone">Microphone</SelectItem>
+                      <SelectItem value="display">Meeting tab audio</SelectItem>
+                      <SelectItem value="both">Mic + meeting audio</SelectItem>
+                    </>
+                  )}
+                </SelectContent>
+              </Select>
+              <CaptureHint
+                source={captureSource}
+                engine={
+                  isLiveCaptions ? "Live Captions" : useDeepgramEngine ? "Deepgram" : "OpenAI"
+                }
+              />
+            </div>
           )}
 
+          <div className="space-y-1.5">
+            <Label htmlFor="manual-caption">Paste captions by hand</Label>
+            <Textarea
+              id="manual-caption"
+              value={manualCaption}
+              onChange={(e) => setManualCaption(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  addManualCaption();
+                }
+              }}
+              placeholder="Paste what the interviewer said, then Add (⌘/Ctrl+Enter)…"
+              className="min-h-[56px]"
+            />
+            <Button size="sm" variant="outline" onClick={addManualCaption}>
+              Add to transcript
+            </Button>
+          </div>
+
+          <PositioningBriefCard
+            brief={positioning}
+            loading={briefLoading}
+            building={briefBuilding}
+            disabled={!candidateId || !jobId}
+            onBuild={() => void buildBrief()}
+          />
           <ShortcutHint />
+        </SetupPanel>
+      )}
+
+      {showHistory && (
+        <HistoryPanel
+          items={feed}
+          activeId={viewLogId ?? coding.activeTurnId}
+          onOpen={openFeedItem}
+          onClose={() => setShowHistory(false)}
+          onClearAnswers={() => {
+            setLog([]);
+            setViewLogId(null);
+          }}
+        />
+      )}
+
+      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+        <div
+          className={cn(tab === "answer" ? "block" : "hidden", "lg:block")}
+          onPointerDownCapture={() => setTab("answer")}
+        >
+          {answerPane}
+        </div>
+        <div
+          className={cn(tab === "code" ? "block" : "hidden", "lg:block")}
+          onPointerDownCapture={() => setTab("code")}
+        >
+          {codePane}
         </div>
       </div>
     </div>
   );
 }
 
-function SessionStatus({
-  sessionId,
-  recording,
-}: {
-  sessionId: string | null;
-  recording: boolean;
-}) {
+function SetupPanel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2 text-sm">
-      <span
-        className={`h-2.5 w-2.5 rounded-full ${
-          recording ? "animate-pulse-dot bg-destructive" : sessionId ? "bg-success" : "bg-muted-foreground/50"
-        }`}
-      />
-      <span className="text-muted-foreground">
-        {recording ? "Recording" : sessionId ? "Session active" : "Not started"}
-      </span>
+    <section className="space-y-3 rounded-lg border bg-card p-3" aria-label="Session setup">
+      {children}
+    </section>
+  );
+}
+
+function TranscriptStrip({
+  finals,
+  interim,
+  recording,
+  onClear,
+}: {
+  finals: FinalChunk[];
+  interim: string;
+  recording: boolean;
+  onClear: () => void;
+}) {
+  const [expanded, setExpanded] = React.useState(false);
+  const scrollRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Keep the newest line in view.
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [finals, interim, expanded]);
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2 text-xs">
+        <span className="font-medium text-muted-foreground">Live transcript</span>
+        {recording && (
+          <span className="flex items-center gap-1 text-destructive">
+            <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-destructive" />
+            recording
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-[11px] text-muted-foreground"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+          >
+            {expanded ? "Less" : "More"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-[11px] text-muted-foreground"
+            onClick={onClear}
+            title="Clear the transcript"
+          >
+            <Eraser className="h-3 w-3" /> Clear
+          </Button>
+        </div>
+      </div>
+      <div
+        ref={scrollRef}
+        className={cn(
+          "overflow-y-auto rounded-md border border-border bg-background/50 px-2.5 py-1.5 text-xs leading-relaxed scrollbar-thin",
+          expanded ? "h-44" : "h-16"
+        )}
+      >
+        {finals.length === 0 && !interim ? (
+          <span className="text-muted-foreground">Transcript will appear here…</span>
+        ) : (
+          <>
+            {finals.map((f) => (
+              <span key={f.seq}>{f.text} </span>
+            ))}
+            {interim && <span className="text-muted-foreground">{interim}</span>}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -1480,47 +1793,6 @@ function BriefList({ label, items }: { label: string; items: string[] }) {
   );
 }
 
-/** Return the last `n` sentences from a transcript, for a tighter prompt. */
-function lastSentences(text: string, n: number): string {
-  const trimmed = text.trim();
-  if (!trimmed) return "";
-  const sentences = trimmed.match(/[^.!?]+[.!?]+|\S[^.!?]*$/g);
-  if (!sentences || sentences.length <= n) return trimmed;
-  return sentences.slice(-n).join(" ").trim();
-}
-
-// The interviewer's latest utterance — a soft focus hint sent alongside the
-// transcript so the model answers the most recent ask, not something stale.
-// Prefers the last sentence; if that sentence is short (likely a terse
-// question that needs its setup), include the one before it too.
-function latestUtterance(text: string): string {
-  const trimmed = text.trim();
-  if (!trimmed) return "";
-  const sentences = trimmed.match(/[^.!?]+[.!?]+|\S[^.!?]*$/g);
-  if (!sentences || sentences.length === 0) return trimmed;
-  const tail = sentences.slice(-2).map((s) => s.trim());
-  const last = tail[tail.length - 1];
-  if (tail.length === 2 && last.split(/\s+/).length <= 7) {
-    return tail.join(" ");
-  }
-  return last;
-}
-
-// Remove the leading words of `text` that are already covered by `consumed` (a
-// previously answered interim that has since finalized into a final chunk).
-// Word-level longest common prefix on a normalized form, so Live Captions
-// revisions only cost a small partial overlap instead of a full re-answer.
-function stripLeadingOverlap(text: string, consumed: string): string {
-  const norm = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
-  const t = text.trim().split(/\s+/).filter(Boolean);
-  const c = consumed.trim().split(/\s+/).filter(Boolean);
-  if (t.length === 0 || c.length === 0) return text.trim();
-  let k = 0;
-  const max = Math.min(t.length, c.length);
-  while (k < max && norm(t[k]) === norm(c[k]) && norm(t[k]) !== "") k++;
-  return t.slice(k).join(" ");
-}
-
 function CaptureHint({
   source,
   engine,
@@ -1575,28 +1847,35 @@ function LiveStatus({
   generating,
   questionReady,
   readyConfidence,
+  coding,
 }: {
   recording: boolean;
   transcribing: boolean;
   generating: boolean;
   questionReady: boolean;
   readyConfidence: string;
+  coding: boolean;
 }) {
   let dot = "bg-muted-foreground/50";
-  let text = "Idle — record audio or paste a caption";
+  let text = "Idle";
   let tone = "text-muted-foreground";
   let pulse = false;
 
   if (generating) {
     dot = "bg-primary";
-    text = "Generating answer…";
+    text = "Writing your answer…";
+    tone = "text-foreground";
+    pulse = true;
+  } else if (coding) {
+    dot = "bg-primary";
+    text = "Solving the problem…";
     tone = "text-foreground";
     pulse = true;
   } else if (questionReady) {
     dot = "bg-success";
     text = readyConfidence
-      ? `Question ready (${readyConfidence}) — press ⌘/Ctrl + Enter`
-      : "They paused — press ⌘/Ctrl + Enter to answer";
+      ? `Question ready (${readyConfidence}) — ⌘/Ctrl+Enter`
+      : "They paused — ⌘/Ctrl+Enter";
     tone = "text-success";
     pulse = true;
   } else if (transcribing) {
@@ -1612,11 +1891,14 @@ function LiveStatus({
   }
 
   return (
-    <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
+    <div
+      className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-xs"
+      title={text}
+    >
       <span
-        className={`h-2.5 w-2.5 rounded-full ${dot} ${pulse ? "animate-pulse-dot" : ""}`}
+        className={`h-2 w-2 shrink-0 rounded-full ${dot} ${pulse ? "animate-pulse-dot" : ""}`}
       />
-      <span className={tone}>{text}</span>
+      <span className={`truncate ${tone}`}>{text}</span>
     </div>
   );
 }
@@ -1647,6 +1929,9 @@ function ShortcutHint() {
     ["⌘/Ctrl + Shift + T", "Technical"],
     ["⌘/Ctrl + Shift + H", "Human"],
     ["⌘/Ctrl + Shift + R", "Regenerate"],
+    ["Alt + ← / →", "Earlier / later answer"],
+    ["⌘/Ctrl + Shift + C", "Answer ⇄ Code"],
+    ["⌘/Ctrl + Shift + 2", "Capture screen"],
   ];
   return (
     <div className="rounded-md border border-border p-3 text-xs text-muted-foreground">

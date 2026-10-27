@@ -6,7 +6,8 @@
  * tests; never mutates the answer.
  */
 
-// Kept in sync with the "BANNED filler" list in MASTER_ANSWER_PROMPT. Matched
+// The single source of truth: MASTER_ANSWER_PROMPT interpolates this very list,
+// so the model is told exactly what the UI will flag. Matched
 // case-insensitively on word boundaries so "leverages" / "leveraging" don't
 // false-positive on "leverage".
 export const BANNED_PHRASES: readonly string[] = [
@@ -31,6 +32,17 @@ export const BANNED_PHRASES: readonly string[] = [
   "aligns perfectly",
   "from a strategic perspective",
   "the key takeaway",
+  "great question",
+  "firm believer",
+  "deep dive",
+  "dive deep",
+  "game-changer",
+  "game changer",
+  "in conclusion",
+  "in summary",
+  "taught me the importance of",
+  "the importance of",
+  "ultimately",
 ];
 
 export type StyleFindingType = "banned_phrase" | "run_on";

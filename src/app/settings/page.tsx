@@ -278,8 +278,10 @@ export default function SettingsPage() {
                 disabled={!hydrated}
               />
               <p className="text-xs text-muted-foreground">
-                How long the interviewer pauses before we mark the turn ready /
-                auto-answer. Higher avoids cutting them off mid-question.
+                Base pause before we mark the turn ready / auto-answer. It adapts:
+                a finished question answers sooner, a sentence that trails off with
+                no punctuation waits about twice as long. Raise it if you get cut
+                off mid-question.
               </p>
             </div>
             <div className="space-y-1.5">
@@ -340,10 +342,17 @@ export default function SettingsPage() {
             disabled={!hydrated}
           />
           <ToggleRow
-            label="Fill in realistic details"
-            description="On (default): where your resume is thin, answers add plausible, consistent specifics so you sound like a real practitioner — always verify before saying them. Off: answers use only facts from your profile, stories, and JD."
+            label="Fill gaps with plausible details"
+            description="On (default): when your resume and stories don't hold the detail an answer needs, it supplies one a real person would remember (the moment, the scale, who was involved), fitted to your field and kept consistent for the whole interview, coding included. Off: it sticks to what's in your profile and stories and gets specific through your reasoning."
             checked={settings.allowInventedDetails}
             onCheckedChange={(v) => update({ allowInventedDetails: v })}
+            disabled={!hydrated}
+          />
+          <ToggleRow
+            label="Live coding: use the base model instead of Pro"
+            description="On (default): if your Strong model is a Pro model, live coding uses its base model (e.g. gpt-5.5-pro to gpt-5.5). Much faster and cheaper. Off: use the Strong model exactly as picked, Pro included. Most accurate, but it can think for minutes and costs far more. The 'say first' line still arrives in seconds either way."
+            checked={settings.codingBaseModel}
+            onCheckedChange={(v) => update({ codingBaseModel: v })}
             disabled={!hydrated}
           />
           <ToggleRow

@@ -60,6 +60,45 @@ test("reconciler commits each sentence exactly once across a rolling window", ()
   ]);
 });
 
+test("reconciler keeps Node.js intact instead of cutting the sentence at the dot", () => {
+  const reconciler = new CaptionReconciler();
+  const finals = [
+    ...reconciler.push("Do you have experience with Node.js in production? Tell").finals,
+    ...reconciler.push("with Node.js in production? Tell me about it.").finals,
+  ];
+  assert.deepEqual(finals, ["Do you have experience with Node.js in production?"]);
+});
+
+test("a question the interviewer genuinely repeats later is not swallowed", () => {
+  const reconciler = new CaptionReconciler();
+  const filler = Array.from({ length: 24 }, (_, i) => `Distinct sentence number ${i} about topic ${i + 100}.`).join(" ");
+  const first = reconciler.push("Can you elaborate on that? Okay thanks.").finals;
+  assert.deepEqual(first, ["Can you elaborate on that?"]);
+
+  reconciler.push(filler);
+  const later = reconciler.push("Can you elaborate on that? Next.").finals;
+  assert.ok(later.includes("Can you elaborate on that?"), `got: ${JSON.stringify(later)}`);
+});
+
+test("a word revised inside already-committed text does not re-emit the window", () => {
+  const reconciler = new CaptionReconciler();
+  const finals = [
+    ...reconciler.push(
+      "We moved the billing service to Kubernetes last year. It was a big change for the team. Then we"
+    ).finals,
+    // Live Captions revised "big" -> "bold" in text we had already committed, so
+    // the snapshot no longer STARTS with the committed tail.
+    ...reconciler.push(
+      "It was a bold change for the team. Then we split the monolith. Next"
+    ).finals,
+  ];
+  assert.deepEqual(finals, [
+    "We moved the billing service to Kubernetes last year.",
+    "It was a big change for the team.",
+    "Then we split the monolith.",
+  ]);
+});
+
 test("reconciler does not double-commit a phrase repeated within one snapshot", () => {
   const reconciler = new CaptionReconciler();
   const { finals } = reconciler.push("I built Canvas. I built Canvas. Then I left.");

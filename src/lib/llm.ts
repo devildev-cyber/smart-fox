@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { isProModel } from "./model-utils";
 import { z } from "zod";
 import { getRuntimeConfig, type ReasoningEffortTier } from "./runtime-config";
 
@@ -130,9 +131,7 @@ function isReasoningModel(model: string): boolean {
  * so they need a much larger timeout + output budget than ordinary reasoning
  * models. Getting either wrong looks like "analysis just doesn't work".
  */
-function isProModel(model: string): boolean {
-  return model.toLowerCase().includes("-pro");
-}
+export { isProModel };
 
 type ReasoningEffortValue = NonNullable<
   OpenAI.Responses.ResponseCreateParams["reasoning"]
@@ -433,6 +432,16 @@ export async function* streamText({
           yield event.delta;
         } else if (event.type === "response.failed") {
           throw new LlmError("The model failed while streaming the answer.", 502);
+        } else if (event.type === "response.incomplete" && !yieldedAny) {
+          // Reasoning tokens count against the output cap: a model can spend the
+          // whole budget thinking and stop with no text at all. Say so plainly
+          // instead of leaving a silent, empty answer. (Status 422 so the retry
+          // logic doesn't repeat an identical, equally doomed request.)
+          const reason = event.response.incomplete_details?.reason ?? "incomplete";
+          throw new LlmError(
+            `The model used its whole output budget thinking and produced no answer (${reason}). Lower the reasoning effort or pick a faster model.`,
+            422
+          );
         }
       }
       return;
@@ -452,11 +461,16 @@ function shouldRetry(err: unknown): boolean {
     // Retry on bad-format / empty / gateway issues, not on auth/config errors.
     return err.status === 502;
   }
+  // The caller cancelled on purpose (new generate replaced this one).
+  if (err instanceof OpenAI.APIUserAbortError) return false;
+  // Dropped connections and timeouts are APIError subclasses with NO status, so
+  // they must be matched before the status check below or they'd never retry.
+  if (err instanceof OpenAI.APIConnectionError) return true;
   if (err instanceof OpenAI.APIError) {
     const status = err.status ?? 0;
     return status === 429 || status >= 500;
   }
-  // Network / timeout style errors.
+  // Anything else (plain network errors surfaced by fetch).
   return true;
 }
 
@@ -466,7 +480,7 @@ function normalizeError(err: unknown): LlmError {
   if (err instanceof OpenAI.APIError) {
     const status = err.status ?? 500;
     if (status === 401) {
-      return new LlmError("OpenAI rejected the API key. Check OPENAI_API_KEY.", 401);
+      return new LlmError("OpenAI rejected the API key. Check the key on the Settings page.", 401);
     }
     if (status === 429) {
       return new LlmError(

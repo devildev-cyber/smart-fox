@@ -1,10 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  BANNED_PHRASES,
   lintAnswerStyle,
   bannedPhrasesIn,
   styleRiskNote,
 } from "./answer-style";
+import { MASTER_ANSWER_PROMPT } from "./prompts";
 
 test("flags banned corporate filler case-insensitively", () => {
   const phrases = bannedPhrasesIn(
@@ -64,4 +66,18 @@ test("flags the newer AI/corporate tells", () => {
   assert.ok(phrases.includes("spearheaded"));
   assert.ok(phrases.includes("instrumental in"));
   assert.ok(phrases.includes("aligns perfectly"));
+});
+
+
+test("the answer prompt is generated from the same banned list the UI linter uses", () => {
+  for (const phrase of BANNED_PHRASES) {
+    assert.ok(MASTER_ANSWER_PROMPT.includes(`"${phrase}"`), `prompt is missing banned phrase: ${phrase}`);
+  }
+});
+
+test("the prompt keeps its core contracts (silence sentinel, META trailer, hard limits)", () => {
+  assert.match(MASTER_ANSWER_PROMPT, /NO_ANSWER/);
+  assert.match(MASTER_ANSWER_PROMPT, /---META---/);
+  assert.match(MASTER_ANSWER_PROMPT, /HARD LIMITS/);
+  assert.match(MASTER_ANSWER_PROMPT, /could any other candidate have said this/i);
 });

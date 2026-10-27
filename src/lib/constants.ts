@@ -89,10 +89,17 @@ export interface AppSettings {
   boldKeywords: boolean;
   /**
    * When on (default), the model fills thin spots with realistic, consistent
-   * specifics so answers sound like a real practitioner. Off = strict grounding:
-   * only use details actually present in the profile, stories, and JD.
+   * specifics so answers sound like a real practitioner, and keeps them
+   * consistent for the rest of the interview. Off = strict grounding: only use
+   * details actually present in the profile, stories, and JD.
    */
   allowInventedDetails: boolean;
+  /**
+   * Live coding: on (default) swaps a Pro model for its base model, which is
+   * much faster and cheaper. Off = use your Strong model exactly as picked, Pro
+   * included (most accurate, but it can take minutes and costs far more).
+   */
+  codingBaseModel: boolean;
   maxSentences: number;
   transcriptWindowSeconds: number;
   /** Length of each OpenAI transcription segment, in seconds. Lower = less lag. */
@@ -131,6 +138,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoAnswer: false,
   boldKeywords: false,
   allowInventedDetails: true,
+  codingBaseModel: true,
   maxSentences: 4,
   transcriptWindowSeconds: 90,
   sttSegmentSeconds: 4,

@@ -2,6 +2,7 @@ import { handleRouteError, jsonError, jsonOk, parseBody } from "@/lib/api";
 import { positioningBriefRequestSchema } from "@/lib/schemas";
 import { generatePositioningBrief } from "@/lib/llm-tasks";
 import {
+  loadAllStories,
   loadCandidateStructured,
   loadJobStructured,
   loadPositioningBrief,
@@ -42,9 +43,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const [{ candidate, rawResumeText }, job] = await Promise.all([
+    const [{ candidate, rawResumeText }, job, stories] = await Promise.all([
       loadCandidateStructured(data.candidateProfileId),
       loadJobStructured(data.jobProfileId),
+      loadAllStories(),
     ]);
 
     if (!candidate) {
@@ -64,6 +66,7 @@ export async function POST(request: Request) {
       candidate,
       rawResumeText,
       job,
+      stories,
     });
 
     await savePositioningBrief(data.candidateProfileId, data.jobProfileId, brief);

@@ -8,7 +8,8 @@ import { assertAccess } from "@/lib/access";
 export const runtime = "nodejs";
 // Screenshots make request bodies large; allow generous execution time for the
 // vision model to read them and stream a full solution.
-export const maxDuration = 120;
+// A Pro model can think for minutes before it writes the code.
+export const maxDuration = 800;
 
 export async function POST(request: Request) {
   const { data, error } = await parseBody(request, codingSolveRequestSchema);
@@ -39,6 +40,8 @@ export async function POST(request: Request) {
     priorProblem: data.priorProblem,
     currentCode: data.currentCode,
     candidate,
+    sessionContext: data.sessionContext,
+    useBaseModel: data.useBaseModel,
   });
 
   return streamTextResponse(generator);

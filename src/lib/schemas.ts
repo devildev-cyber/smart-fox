@@ -68,6 +68,10 @@ export interface BriefProject {
   // they owned, pushed for, were frustrated or proud about. Gives live answers a
   // center so they don't sound neutral or generic.
   humanPoint: string;
+  // Details added to make the project concrete that are NOT on the resume or in
+  // a verified story. Surfaced so the candidate (and the live answer) can tell
+  // real from invented, instead of discovering it on the second follow-up.
+  invented: string[];
 }
 
 const looseProjects = z.any().transform((val): BriefProject[] => {
@@ -75,7 +79,7 @@ const looseProjects = z.any().transform((val): BriefProject[] => {
   return arr
     .map((item): BriefProject => {
       if (typeof item === "string") {
-        return { title: "", what: item.trim(), contributions: [], tech: [], impact: [], humanPoint: "" };
+        return { title: "", what: item.trim(), contributions: [], tech: [], impact: [], humanPoint: "", invented: [] };
       }
       if (item && typeof item === "object" && !Array.isArray(item)) {
         const o = item as Record<string, unknown>;
@@ -95,9 +99,10 @@ const looseProjects = z.any().transform((val): BriefProject[] => {
             "why_it_mattered",
             "take",
           ]),
+          invented: toStringArray(o.invented ?? o.invented_details ?? o.not_on_resume),
         };
       }
-      return { title: "", what: itemToLabel(item), contributions: [], tech: [], impact: [], humanPoint: "" };
+      return { title: "", what: itemToLabel(item), contributions: [], tech: [], impact: [], humanPoint: "", invented: [] };
     })
     .filter(
       (p) =>
@@ -394,6 +399,9 @@ export const generateAnswerRequestSchema = z
     allowInventedDetails: z.boolean().default(true),
     // Prior answered turns this session, so the model can reference instead of repeat.
     priorTurns: z.array(priorTurnSchema).default([]),
+    // What was solved in the coding copilot this session, so a spoken follow-up
+    // about the code ("why a hash map?") is answered from it.
+    codingContext: z.string().max(6000).default(""),
   })
   .refine(
     (d) => d.detectedQuestion.trim() || d.recentTranscript.trim() || d.focusHint.trim(),
@@ -439,7 +447,9 @@ export const codingSolveRequestSchema = z
   .object({
     // Screenshot(s) of the problem / editor as data URLs (png or jpeg base64).
     // Multiple = scrolled captures or several problems, stitched by the model.
-    images: z.array(z.string()).max(8).default([]),
+    // Each is capped (~9 MB of base64) so a stray full-resolution paste can't
+    // turn one solve into an enormous, slow, expensive upload.
+    images: z.array(z.string().max(12_000_000)).max(8).default([]),
     // Optional pasted problem text (clipboard-first when the screen is shared).
     pastedText: z.string().default(""),
     // What the interviewer just said (from the live transcript), for intent.
@@ -450,6 +460,11 @@ export const codingSolveRequestSchema = z
     // Prior context within the same coding session so follow-ups build on it.
     priorProblem: z.string().default(""),
     currentCode: z.string().default(""),
+    // The spoken answers given so far in this interview, so the code and the
+    // narration stay consistent with what the candidate already told them.
+    sessionContext: z.string().max(8000).default(""),
+    // Swap a Pro model for its (much faster) base model for this run.
+    useBaseModel: z.boolean().default(true),
   })
   .refine(
     (d) => d.images.length > 0 || d.pastedText.trim() || d.transcript.trim(),
@@ -463,6 +478,46 @@ export const positioningBriefRequestSchema = z.object({
 
 export const improveStoryRequestSchema = z.object({
   storyId: z.string().min(1),
+});
+
+// "Sharpen": interview the candidate to turn a thin story into a real one. The
+// story is sent in full (not looked up by id) so unsaved edits in the dialog
+// are respected.
+export const sharpenStorySchema = z.object({
+  title: z.string().default(""),
+  category: z.string().default("general"),
+  shortVersion: z.string().default(""),
+  starVersion: z.string().default(""),
+  technicalVersion: z.string().default(""),
+  keywords: z.array(z.string()).default([]),
+  evidence: z.array(z.string()).default([]),
+});
+export type SharpenStory = z.infer<typeof sharpenStorySchema>;
+
+export const sharpenStoryRequestSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("questions"),
+    story: sharpenStorySchema,
+    candidateProfileId: z.string().optional(),
+  }),
+  z.object({
+    action: z.literal("merge"),
+    story: sharpenStorySchema,
+    answers: z
+      .array(z.object({ question: z.string(), answer: z.string() }))
+      .max(8),
+  }),
+]);
+
+export const sharpenQuestionsSchema = z.object({
+  questions: z
+    .array(
+      z.object({
+        id: z.string().default(""),
+        question: z.string().min(1),
+      })
+    )
+    .default([]),
 });
 
 /* ----------------------------- DB write schemas ----------------------------- */

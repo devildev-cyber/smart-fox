@@ -59,6 +59,41 @@ test("synonym expansion matches a role-specific category", () => {
   assert.equal(selected.stories[0]?.id, "reliability");
 });
 
+test("a sentence-final period does not break term matching", () => {
+  const candidate = {
+    strong_evidence: ["Built Terraform modules for AWS", "Led Kubernetes migration"],
+    projects: [],
+    metrics: [],
+    leadership: [],
+    core_stack: [],
+    secondary_stack: [],
+    domains: [],
+    best_story_angles: [],
+  } as unknown as Parameters<typeof selectContext>[0]["candidate"];
+
+  // Live Captions punctuates statement-style prompts with a trailing ".".
+  for (const question of ["Tell me about Kubernetes.", "Tell me about Kubernetes"]) {
+    const { resumeFacts } = selectContext({ question, candidate });
+    assert.equal(resumeFacts[0], "Led Kubernetes migration", question);
+  }
+});
+
+test("dots inside a name are kept so node.js still matches", () => {
+  const candidate = {
+    strong_evidence: ["Built a REST API in Express", "Shipped a Node.js service on AWS"],
+    projects: [],
+    metrics: [],
+    leadership: [],
+    core_stack: [],
+    secondary_stack: [],
+    domains: [],
+    best_story_angles: [],
+  } as unknown as Parameters<typeof selectContext>[0]["candidate"];
+
+  const { resumeFacts } = selectContext({ question: "Do you know Node.js?", candidate });
+  assert.equal(resumeFacts[0], "Shipped a Node.js service on AWS");
+});
+
 test("selectContext is deterministic for identical inputs", () => {
   const stories: StoryLike[] = [
     story({ id: "a", category: "leadership_or_ownership", title: "Led a migration" }),

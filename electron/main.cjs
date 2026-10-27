@@ -344,7 +344,10 @@ ipcMain.handle("coding:capture", async (_e, sourceId) => {
       sources.find((s) => s.id.startsWith("screen")) ||
       sources[0];
     if (!src) return null;
-    return src.thumbnail.toDataURL();
+    // JPEG, not PNG: a full-screen PNG is several MB and every capture is
+    // uploaded to the model on every solve. At quality 88 on-screen text stays
+    // crisp for the vision model while the upload is far smaller (= faster).
+    return `data:image/jpeg;base64,${src.thumbnail.toJPEG(88).toString("base64")}`;
   } catch (err) {
     log("coding:capture failed:", err instanceof Error ? err.message : String(err));
     return null;

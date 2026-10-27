@@ -145,6 +145,8 @@ export default function SetupPage() {
           method: "POST",
           body: JSON.stringify({
             candidateProfileId: candidate.profile.id,
+            // Tailors planned categories to the target role when a JD is analyzed.
+            jobProfileId: job?.profile.id,
             existingCategories,
           }),
         }

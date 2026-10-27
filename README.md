@@ -2,13 +2,13 @@
 
 A local-first, real-time interview assistant for **your own interview preparation and permitted live coaching**. You add your resume and the job description, start a session, and the app listens to audio (or accepts pasted captions), detects the interviewer's latest real question, and drafts a short, natural, senior-level spoken answer grounded in your resume and the JD.
 
-> This is a personal coach and note assistant only. It has **no** stealth mode, screen reading, proctoring evasion, auto-answer injection, fake typing, or any hidden behavior. It only does what you can see on screen.
+> **Personal, private use.** This is a local-first desktop assistant that runs on your own machine with your own API keys. It includes a **stealth overlay** (hidden from screen capture and the taskbar), a **screen-reading coding copilot** (it captures the screen you choose and sends it to a vision model), and an optional **auto-answer** mode. Interview platforms and employers may prohibit AI assistance during interviews — check the rules of each interview before you use it.
 
 ## Features
 
 - **Setup** — paste or upload (`.txt` / `.pdf`) your resume, paste a job description, and extract structured candidate and job profiles.
 - **Story bank** — full CRUD over reusable stories with short, STAR, and technical versions; generate missing stories from your resume and improve tone.
-- **Live session** — Deepgram streaming transcription (or manual caption paste), live question detection, and grounded answer generation with multiple rewrite modes.
+- **Live session** — Deepgram streaming transcription (or manual caption paste), end-of-turn detection, and grounded answer generation with multiple rewrite modes.
 - **History** — review past sessions, export to Markdown, and generate a post-interview review (questions asked, strong/weak answers, missing prep areas, and a follow-up email draft).
 - **Settings** — model/key status, answer defaults, transcript window, auto-answer toggle, bold keywords, theme, and a delete-all-data control.
 - Clean dark UI, keyboard-first workflow, loading/empty/error states, and toast notifications.
@@ -51,9 +51,9 @@ You can configure the OpenAI key and models **either** in the Settings UI **or**
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `OPENAI_API_KEY` | If not set in UI | — | Enables resume/JD analysis, question detection, answers, and transcription |
+| `OPENAI_API_KEY` | If not set in UI | — | Enables resume/JD analysis, answers, and transcription |
 | `OPENAI_MODEL` | No | `gpt-4.1` | Strong model for answers, story generation, and reviews |
-| `OPENAI_FAST_MODEL` | No | `gpt-4.1-mini` | Fast model for question detection |
+| `OPENAI_FAST_MODEL` | No | `gpt-4.1-mini` | Fast model for live answers and rewrites |
 | `DEEPGRAM_API_KEY` | No | — | Optional low-latency mic streaming. If missing, OpenAI transcribes audio instead |
 | `DATABASE_URL` | No | `file:./dev.db` | SQLite database location |
 

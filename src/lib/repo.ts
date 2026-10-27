@@ -116,5 +116,6 @@ export async function loadAllStories(): Promise<StoryLike[]> {
     starVersion: r.starVersion,
     technicalVersion: r.technicalVersion,
     keywords: safeJsonParse<string[]>(r.keywordsJson, []),
+    evidence: safeJsonParse<string[]>(r.evidenceJson, []),
   }));
 }

@@ -29,6 +29,7 @@ import {
 import { StoryDialog } from "@/components/story-dialog";
 import { apiFetch } from "@/lib/client";
 import { storyCategoryLabel } from "@/lib/constants";
+import { isToldByCandidate } from "@/lib/story-truth";
 import type {
   CandidateProfileDto,
   JobProfileDto,
@@ -265,9 +266,20 @@ function StoryCard({
         <div className="flex items-start justify-between gap-2">
           <div>
             <CardTitle className="text-base">{story.title}</CardTitle>
-            <Badge variant="outline" className="mt-1 font-normal">
-              {categoryLabel}
-            </Badge>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              <Badge variant="outline" className="font-normal">
+                {categoryLabel}
+              </Badge>
+              {isToldByCandidate(story.evidence) ? (
+                <Badge variant="success" className="font-normal" title="You told us real details for this story">
+                  Told by you
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="font-normal" title="Built from the resume only. Open it and use Sharpen to add real details.">
+                  Resume only
+                </Badge>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-1">
             <Button variant="ghost" size="icon" onClick={onImprove} disabled={improving} title="Improve tone">

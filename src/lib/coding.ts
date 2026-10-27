@@ -50,6 +50,9 @@ export interface CodingStep {
 
 export interface CodingSolution {
   mode: CodingMode | null;
+  /** One line: the problem as the model read it (plus any assumption), so a
+   *  misread screenshot is obvious before the candidate types anything. */
+  problem: string;
   /** The opening line the candidate says before typing. */
   say: string;
   /** Ordered code+narration steps (empty for verbal modes). */
@@ -72,6 +75,7 @@ const MARKER_RE = /^@@([A-Z]+)@@[ \t]*(.*)$/;
 // stay robust to the model emitting the older single-block shape.
 const KNOWN_MARKERS = new Set([
   "MODE",
+  "PROBLEM",
   "SAY",
   "STEP",
   "CODE",
@@ -85,6 +89,7 @@ const KNOWN_MARKERS = new Set([
 function emptySolution(): CodingSolution {
   return {
     mode: null,
+    problem: "",
     say: "",
     steps: [],
     language: "",
@@ -134,6 +139,7 @@ export function parseCodingStream(full: string): CodingSolution {
   const lines = stripPartialMarker(text.split("\n"));
 
   const say: string[] = [];
+  const problem: string[] = [];
   const complexity: string[] = [];
   const points: string[] = [];
   const note: string[] = [];
@@ -141,7 +147,7 @@ export function parseCodingStream(full: string): CodingSolution {
   const stepCode: string[][] = [];
   const stepNarrate: string[][] = [];
 
-  // "say" | "step" | "narrate" | "complexity" | "points" | "note" | null
+  // "problem" | "say" | "step" | "narrate" | "complexity" | "points" | "note" | null
   let current: string | null = "say";
   let stepIdx = -1;
 
@@ -162,6 +168,10 @@ export function parseCodingStream(full: string): CodingSolution {
         case "MODE":
           result.mode = asMode(inline);
           current = null;
+          break;
+        case "PROBLEM":
+          current = "problem";
+          if (inline.trim()) problem.push(inline.trim());
           break;
         case "SAY":
           current = "say";
@@ -191,6 +201,9 @@ export function parseCodingStream(full: string): CodingSolution {
     }
 
     switch (current) {
+      case "problem":
+        problem.push(line);
+        break;
       case "say":
         say.push(line);
         break;
@@ -218,6 +231,7 @@ export function parseCodingStream(full: string): CodingSolution {
     if (code || narrate) steps.push({ code, narrate });
   }
 
+  result.problem = problem.join(" ").replace(/\s+/g, " ").trim();
   result.say = say.join("\n").trim();
   result.steps = steps;
   result.complexity = complexity.join("\n").trim();
@@ -243,7 +257,8 @@ export function fullCode(s: CodingSolution): string {
 /** True once the stream has produced something worth showing. */
 export function hasCodingContent(s: CodingSolution): boolean {
   return Boolean(
-    s.say ||
+    s.problem ||
+      s.say ||
       s.steps.length ||
       s.complexity ||
       s.points ||

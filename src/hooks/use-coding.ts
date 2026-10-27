@@ -7,8 +7,25 @@ import {
   parseCodingStream,
   hasCodingContent,
   codingTurnTitle,
+  fullCode,
   type CodingSolution,
 } from "@/lib/coding";
+import { lastSentences } from "@/lib/transcript-turn";
+import { shrinkImage } from "@/lib/image-shrink";
+
+export interface SolveOptions {
+  /** Force a mode for this run (a follow-up chip). */
+  mode?: CodingModeChoice;
+  /** Use this ask instead of the editable field (a follow-up chip / box). */
+  ask?: string;
+  /** Use exactly these images (a capture taken this very tick). */
+  images?: string[];
+  /**
+   * A follow-up on the problem already on screen ("optimize it"): don't send the
+   * screenshots again. The problem line and the working code carry the context.
+   */
+  followUp?: boolean;
+}
 
 export type CodingModeChoice =
   | "auto"
@@ -45,6 +62,7 @@ function uid(): string {
 function emptySolution(language: string): CodingSolution {
   return {
     mode: null,
+    problem: "",
     say: "",
     steps: [],
     language: language === "auto" ? "" : language,
@@ -63,8 +81,12 @@ function emptySolution(language: string): CodingSolution {
 export function useCoding(opts: {
   candidateId?: string;
   getTranscript?: () => string;
+  /** What the candidate already said in this interview, sent with every solve. */
+  getSessionContext?: () => string;
+  /** Swap a Pro model for its faster base model. */
+  useBaseModel?: boolean;
 }) {
-  const { candidateId, getTranscript } = opts;
+  const { candidateId, getTranscript, getSessionContext, useBaseModel } = opts;
 
   const electron = React.useMemo(() => getElectronAPI(), []);
   const canNativeCapture = Boolean(electron?.coding);
@@ -92,6 +114,11 @@ export function useCoding(opts: {
   const [activeTurnId, setActiveTurnId] = React.useState<string | null>(null);
 
   const abortRef = React.useRef<AbortController | null>(null);
+  // What follow-ups ("now optimize it") build on. Kept separately from history
+  // because a "fix" turn holds only a few edited lines, not a runnable program:
+  // treating those as "the current code" would mislead every later turn.
+  const workingCodeRef = React.useRef("");
+  const problemRef = React.useRef("");
 
   const activeTurn =
     activeTurnId != null ? history.find((t) => t.id === activeTurnId) ?? null : null;
@@ -118,13 +145,17 @@ export function useCoding(opts: {
     }
   }, [electron]);
 
-  const addImage = React.useCallback((dataUrl: string) => {
-    if (!dataUrl) return;
+  // Adds a capture (shrunk first, so a raw 4K screenshot isn't uploaded twice per
+  // solve) and returns the image that was added.
+  const addImage = React.useCallback(async (raw: string): Promise<string> => {
+    if (!raw) return "";
+    const dataUrl = await shrinkImage(raw);
     // Adding an input implies we're working on the live turn again.
     setActiveTurnId(null);
     setImages((prev) =>
       prev.length >= MAX_IMAGES ? prev : [...prev, { id: uid(), dataUrl }]
     );
+    return dataUrl;
   }, []);
 
   const removeImage = React.useCallback((id: string) => {
@@ -132,15 +163,15 @@ export function useCoding(opts: {
   }, []);
 
   const capture = React.useCallback(async () => {
-    if (!electron?.coding) return;
+    if (!electron?.coding) return null;
     let id = sourceId;
     if (!id) {
       const list = await refreshSources();
       id = list.find((s) => s.id.startsWith("screen"))?.id ?? list[0]?.id ?? "";
     }
-    if (!id) return;
-    const dataUrl = await electron.coding.capture(id);
-    if (dataUrl) addImage(dataUrl);
+    if (!id) return null;
+    const raw = await electron.coding.capture(id);
+    return raw ? await addImage(raw) : null;
   }, [electron, sourceId, refreshSources, addImage]);
 
   const captureViaDisplayMedia = React.useCallback(async () => {
@@ -161,18 +192,26 @@ export function useCoding(opts: {
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("Could not grab the frame.");
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      addImage(canvas.toDataURL("image/png"));
+      return await addImage(canvas.toDataURL("image/png"));
     } finally {
       stream.getTracks().forEach((t) => t.stop());
     }
   }, [addImage]);
 
+  // The last few sentences of live speech: what the interviewer just asked. Kept
+  // short on purpose — a long transcript buries the instruction and can mislead
+  // the model about what the screenshot is for.
+  const recentAsk = React.useCallback(() => {
+    const t = getTranscript?.() ?? "";
+    return lastSentences(t, 3, 70).trim();
+  }, [getTranscript]);
+
   // Pull the latest interviewer speech into the editable ask field.
   const pullAsk = React.useCallback(() => {
-    const t = getTranscript?.() ?? "";
-    if (t.trim()) setAsk(t.trim());
-    return t.trim();
-  }, [getTranscript]);
+    const t = recentAsk();
+    if (t) setAsk(t);
+    return t;
+  }, [recentAsk]);
 
   const selectTurn = React.useCallback((id: string | null) => {
     setActiveTurnId(id);
@@ -187,6 +226,8 @@ export function useCoding(opts: {
     setSolution(null);
     setError(null);
     setActiveTurnId(null);
+    workingCodeRef.current = "";
+    problemRef.current = "";
   }, []);
 
   const stop = React.useCallback(() => {
@@ -194,30 +235,35 @@ export function useCoding(opts: {
   }, []);
 
   const solve = React.useCallback(
-    async (overrideMode?: CodingModeChoice) => {
+    async (opts: SolveOptions = {}) => {
+      const overrideMode = opts.mode;
+      const askText = opts.ask ?? ask;
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
 
       // Follow-ups build on the most recent completed turn.
       const prior = history[0]?.solution ?? null;
-      const priorCode = prior
-        ? prior.steps.map((s) => s.code).filter(Boolean).join("\n")
-        : "";
 
-      const imageUrls = images.map((c) => c.dataUrl);
+      // A follow-up only skips the screenshots when we already know the problem.
+      const skipImages = Boolean(opts.followUp && problemRef.current);
+      const imageUrls = skipImages ? [] : (opts.images ?? images.map((c) => c.dataUrl));
       const payload = {
         images: imageUrls,
         pastedText,
-        transcript: ask,
+        transcript: askText,
         language,
         mode: overrideMode ?? mode,
         candidateProfileId: candidateId || undefined,
-        priorProblem: prior ? [prior.say, prior.points].filter(Boolean).join("\n") : "",
-        currentCode: priorCode,
+        priorProblem: [problemRef.current, prior?.say, prior?.points]
+          .filter(Boolean)
+          .join("\n"),
+        currentCode: workingCodeRef.current,
+        sessionContext: getSessionContext?.() ?? "",
+        useBaseModel: Boolean(useBaseModel),
       };
 
-      if (imageUrls.length === 0 && !pastedText.trim() && !ask.trim()) {
+      if (imageUrls.length === 0 && !pastedText.trim() && !askText.trim() && !skipImages) {
         setError("Capture a screenshot, paste the problem, or add the interviewer's ask first.");
         return;
       }
@@ -245,13 +291,17 @@ export function useCoding(opts: {
         if (parsed.error) {
           setError(parsed.error);
         } else if (hasCodingContent(parsed)) {
+          if (parsed.problem) problemRef.current = parsed.problem;
+          if ((parsed.mode === "new" || parsed.mode === "optimize") && parsed.steps.length) {
+            workingCodeRef.current = fullCode(parsed);
+          }
           const turn: CodingTurn = {
             id: uid(),
             at: Date.now(),
             title: codingTurnTitle(parsed),
             solution: parsed,
             images: imageUrls,
-            ask,
+            ask: askText,
           };
           setHistory((prev) => [turn, ...prev].slice(0, MAX_HISTORY));
         }
@@ -265,8 +315,45 @@ export function useCoding(opts: {
         }
       }
     },
-    [images, pastedText, ask, language, mode, candidateId, history]
+    [
+      images,
+      pastedText,
+      ask,
+      language,
+      mode,
+      candidateId,
+      history,
+      getSessionContext,
+      useBaseModel,
+    ]
   );
+
+  // The one-press flow: grab the screen, fill the ask from what the interviewer
+  // just said (unless one was typed), and solve. When a solution already exists
+  // the new capture REPLACES the old ones — it is almost always an updated editor
+  // or a new problem, and a stale screenshot alongside it confuses the model.
+  // (Several captures for one scrolled problem: press Capture repeatedly, then
+  // Solve.)
+  const captureAndSolve = React.useCallback(async () => {
+    const dataUrl = canNativeCapture ? await capture() : await captureViaDisplayMedia();
+    if (!dataUrl) return;
+    const replace = Boolean(solution) && !solving;
+    const nextImages = replace ? [dataUrl] : [...images.map((c) => c.dataUrl), dataUrl];
+    if (replace) setImages([{ id: uid(), dataUrl }]);
+    const askText = ask.trim() || recentAsk();
+    if (askText && askText !== ask) setAsk(askText);
+    await solve({ images: nextImages.slice(-MAX_IMAGES), ask: askText });
+  }, [
+    canNativeCapture,
+    capture,
+    captureViaDisplayMedia,
+    solution,
+    solving,
+    images,
+    ask,
+    recentAsk,
+    solve,
+  ]);
 
   React.useEffect(() => {
     return () => abortRef.current?.abort();
@@ -297,6 +384,8 @@ export function useCoding(opts: {
     solving,
     error,
     solve,
+    captureAndSolve,
+    recentAsk,
     stop,
     newProblem,
     // History + navigation.

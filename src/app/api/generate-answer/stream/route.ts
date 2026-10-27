@@ -54,6 +54,7 @@ export async function POST(request: Request) {
     allowInventedDetails: data.allowInventedDetails,
     rawResumeFallback: candidate ? undefined : rawResumeText || undefined,
     priorTurns: data.priorTurns,
+    codingContext: data.codingContext,
   });
 
   return streamTextResponse(generator);

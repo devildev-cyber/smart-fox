@@ -125,3 +125,20 @@ test("empty input yields an empty, content-free solution", () => {
   assert.equal(hasCodingContent(s), false);
   assert.equal(s.steps.length, 0);
 });
+
+test("parses the one-line PROBLEM echo, inline and across lines", () => {
+  const s = parseCodingStream(
+    ["@@MODE@@ new", "@@PROBLEM@@ Two Sum — return indices; assuming exactly one answer.", "@@SAY@@", "Let me start."].join("\n")
+  );
+  assert.equal(s.problem, "Two Sum — return indices; assuming exactly one answer.");
+  assert.equal(s.say, "Let me start.");
+
+  const wrapped = parseCodingStream(["@@PROBLEM@@", "Reverse a linked list", "in place.", "@@SAY@@", "Okay."].join("\n"));
+  assert.equal(wrapped.problem, "Reverse a linked list in place.");
+});
+
+test("the PROBLEM line alone counts as content and never leaks into SAY", () => {
+  const s = parseCodingStream("@@MODE@@ new\n@@PROBLEM@@ Two Sum");
+  assert.equal(hasCodingContent(s), true);
+  assert.equal(s.say, "");
+});

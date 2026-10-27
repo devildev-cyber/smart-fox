@@ -1,4 +1,5 @@
 import type { CandidateStructured, JobStructured, PositioningBrief } from "./schemas";
+import { isToldByCandidate } from "./story-truth";
 
 export interface StoryLike {
   id: string;
@@ -8,6 +9,8 @@ export interface StoryLike {
   starVersion: string;
   technicalVersion: string;
   keywords: string[];
+  /** Evidence lines; "told by you: ..." entries mark candidate-verified detail. */
+  evidence?: string[];
 }
 
 const STOPWORDS = new Set([
@@ -61,6 +64,10 @@ function tokenize(text: string): string[] {
     .toLowerCase()
     .replace(/[^a-z0-9+#.\s]/g, " ")
     .split(/\s+/)
+    // Dots are kept INSIDE a token ("node.js", "asp.net") but a sentence-final
+    // or leading one is punctuation, not part of the word — otherwise
+    // "...about Kubernetes." yields "kubernetes." and never matches anything.
+    .map((t) => t.replace(/^\.+|\.+$/g, ""))
     .filter((t) => t.length > 2 && !STOPWORDS.has(t));
 }
 
@@ -122,6 +129,11 @@ function categoryTokens(slug: string): string[] {
 // Added to a story's lexical overlap when its category matches the query
 // intent, so a categorically-correct story outranks an incidental keyword hit.
 const CATEGORY_BOOST = 3;
+
+// A story the candidate told us real detail for beats an otherwise-equal one: it
+// holds lived specifics that don't have to be invented. Small on purpose — it
+// breaks ties, it never outranks a clearly better topical match.
+const TOLD_BOOST = 0.5;
 
 function overlapScore(query: Set<string>, text: string): number {
   if (query.size === 0) return 0;
@@ -240,6 +252,7 @@ function rankStories(
     let score = overlapScore(query, text);
     const categoryMatches = categoryTokens(story.category).some((t) => query.has(t));
     if (categoryMatches) score += CATEGORY_BOOST;
+    if (isToldByCandidate(story.evidence)) score += TOLD_BOOST;
     return { story, index, score };
   });
   scored.sort((a, b) => {
@@ -300,6 +313,17 @@ function renderPositioning(brief: PositioningBrief): string {
   return lines.join("\n");
 }
 
+// Keep the last `max` characters, but never start mid-word: a cut like
+// "ubernetes cluster" would feed the model a garbled, misleading fragment.
+function tailAtWordBoundary(text: string, max: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) return trimmed;
+  const cut = trimmed.slice(-max);
+  const firstSpace = cut.search(/\s/);
+  // Unspaced scripts (Chinese) have no boundary to snap to; keep the raw cut.
+  return (firstSpace > 0 && firstSpace < 40 ? cut.slice(firstSpace + 1) : cut).trim();
+}
+
 export function buildAnswerContext(params: {
   detectedQuestion: string;
   questionType?: string;
@@ -311,11 +335,13 @@ export function buildAnswerContext(params: {
   positioning?: PositioningBrief | null;
   rawResumeFallback?: string;
   priorTurns?: PriorTurn[];
+  /** What was solved in the coding copilot this session (canon the interviewer may ask about). */
+  codingContext?: string;
 }): string {
   const { detectedQuestion, questionType, recentTranscript, candidate, job, selected } =
     params;
   const focusHint = (params.focusHint ?? "").trim();
-  const transcript = recentTranscript.slice(-2000).trim();
+  const transcript = tailAtWordBoundary(recentTranscript, 2000);
   const hasExplicitQuestion = Boolean(detectedQuestion.trim());
 
   // Assembled in two halves. The STABLE half (profile, positioning brief,
@@ -375,10 +401,16 @@ export function buildAnswerContext(params: {
 
   if (selected.stories.length) {
     const storyText = selected.stories
-      .map(
-        (s) =>
-          `[${s.category}] ${s.title}\n  short: ${s.shortVersion}\n  star: ${s.starVersion}`
-      )
+      .map((s) => {
+        const told = isToldByCandidate(s.evidence)
+          ? " (told by the candidate — real, lived detail; prefer it)"
+          : "";
+        const lines = [`[${s.category}] ${s.title}${told}`];
+        if (s.shortVersion) lines.push(`  short: ${s.shortVersion}`);
+        if (s.starVersion) lines.push(`  story: ${s.starVersion}`);
+        if (s.technicalVersion) lines.push(`  technical: ${s.technicalVersion}`);
+        return lines.join("\n");
+      })
       .join("\n");
     parts.push(`RELEVANT APPROVED STORIES:\n${storyText}`);
   }
@@ -388,10 +420,15 @@ export function buildAnswerContext(params: {
   if (priorTurns.length) {
     const recent = priorTurns.slice(-6);
     const lines = recent
-      .map((t) => `- Q: ${t.question.trim()} -> ${t.answerGist.trim()}`)
+      .map((t) => `- Q: ${t.question.trim()}\n  Said: ${t.answerGist.trim()}`)
       .join("\n");
     parts.push(
-      `PRIOR ANSWERS THIS SESSION (already covered; do not repeat. If the new question overlaps, reference briefly with "As I mentioned earlier" and add only what is new):\n${lines}`
+      `WHAT YOU'VE ALREADY SAID IN THIS INTERVIEW (canon — every project, name, number and opinion below is now fact. Stay consistent; go deeper on a follow-up; never repeat an answer in full):\n${lines}`
+    );
+  }
+  if (params.codingContext?.trim()) {
+    parts.push(
+      `CODING THIS SESSION (canon — the interviewer may ask about it; answer from this):\n${params.codingContext.trim()}`
     );
   }
 

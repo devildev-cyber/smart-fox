@@ -20,11 +20,30 @@ export function isCjkChar(ch: string): boolean {
   return Boolean(ch) && CJK.test(ch);
 }
 
+// A sentence ends at an ASCII terminator only when it is followed by whitespace
+// or the end of the text, so dots INSIDE a name ("Node.js", "ASP.NET", "v2.0",
+// "3.5") never split it. Full-width CJK terminators need no trailing space.
+// ([\s\S] instead of the `s` flag keeps this valid for older compile targets.)
+const SENTENCE_RE = /[\s\S]+?(?:[.!?]+(?=\s|$)|[。！？…]+|$)/gu;
+
+// A piece ending in one of these is not a real sentence end ("e.g. Redis" /
+// "Dr. Smith" / a list marker like "1.") — glue it to what follows.
+const NOT_A_SENTENCE_END = /(?:^|\s)(?:e\.g|i\.e|vs|mr|mrs|ms|dr|sr|jr|inc|ltd)\.$|^\d{1,2}[.)]$/i;
+
 // Split into sentences on both ASCII and full-width CJK terminators, keeping a
 // trailing unpunctuated fragment as its own (in-progress) sentence.
 export function splitSentences(text: string): string[] {
-  const matches = text.match(/[^.!?。！？…]+[.!?。！？…]+|\S[^.!?。！？…]*$/gu);
-  return matches ? matches.map((s) => s.trim()).filter(Boolean) : [];
+  const pieces = (text.match(SENTENCE_RE) ?? []).map((s) => s.trim()).filter(Boolean);
+  const out: string[] = [];
+  for (const piece of pieces) {
+    const prev = out[out.length - 1];
+    if (prev && NOT_A_SENTENCE_END.test(prev)) {
+      out[out.length - 1] = `${prev} ${piece}`;
+    } else {
+      out.push(piece);
+    }
+  }
+  return out;
 }
 
 // Tokenize for alignment + reconstruction: each CJK character is its own token
@@ -101,11 +120,58 @@ const LIVE_MARGIN = 8;
 // would otherwise never fire.
 const LIVE_MAX = 24;
 const TAIL_MAX = 80;
+// How many recent fragments the exact-match dedup backstop remembers. The
+// caption window only ever holds a few sentences, so anything older can't be a
+// re-emission — and remembering forever would silently swallow a question the
+// interviewer legitimately repeats later ("Can you elaborate on that?").
+const SEEN_MAX = 16;
+// Tokens of the committed tail used to re-find our place when the window was
+// revised/scrolled so the snapshot no longer STARTS with the tail. Longer for
+// CJK (one token per character) so a common character run can't false-match.
+const ANCHOR_LATIN = 4;
+const ANCHOR_CJK = 6;
+
+/**
+ * Align a snapshot against the committed tail and return only the NEW tokens.
+ * First the cheap, exact case (the snapshot starts with the tail's end). If
+ * that finds nothing — Live Captions revised a word inside text we'd already
+ * committed, so the prefix no longer matches — fall back to locating the tail's
+ * last few tokens anywhere in the snapshot and keeping what follows. Taking the
+ * LEFTMOST hit errs toward a rare duplicate (later dedup catches it) rather than
+ * swallowing genuinely new speech, which is the worse failure.
+ */
+export function alignToCommitted(
+  tailNorm: readonly string[],
+  textTokens: string[]
+): string[] {
+  const direct = stripLeadingOverlap(tailNorm, textTokens);
+  if (direct.length < textTokens.length) return direct;
+
+  const cjk = isCjkChar(tailNorm[tailNorm.length - 1]?.slice(-1) ?? "");
+  const anchorLen = cjk ? ANCHOR_CJK : ANCHOR_LATIN;
+  if (tailNorm.length < anchorLen || textTokens.length <= anchorLen) return textTokens;
+
+  const anchor = tailNorm.slice(-anchorLen);
+  if (anchor.some((w) => w === "")) return textTokens;
+
+  const textNorm = textTokens.map(normWord);
+  for (let i = 0; i + anchorLen <= textNorm.length; i++) {
+    let ok = true;
+    for (let k = 0; k < anchorLen; k++) {
+      if (textNorm[i + k] !== anchor[k]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return textTokens.slice(i + anchorLen);
+  }
+  return textTokens;
+}
 
 export class CaptionReconciler {
   // Bounded list of committed tokens, kept only to align the next snapshot.
   #committedTail: string[] = [];
-  // Normalized text of every fragment already emitted — a hard dedup backstop.
+  // Normalized text of the most recent fragments emitted — a dedup backstop.
   #seen = new Set<string>();
   #live = "";
 
@@ -169,6 +235,10 @@ export class CaptionReconciler {
       this.#committedTail = this.#committedTail.slice(-TAIL_MAX);
     }
     this.#seen.add(key);
+    if (this.#seen.size > SEEN_MAX) {
+      const oldest = this.#seen.values().next().value;
+      if (oldest !== undefined) this.#seen.delete(oldest);
+    }
     finals.push(trimmed);
   }
 
@@ -180,7 +250,7 @@ export class CaptionReconciler {
   // Strip the part of the snapshot that overlaps the committed tail and return
   // the remaining (live) tokens.
   #alignLive(snapTokens: string[]): string[] {
-    return stripLeadingOverlap(this.#committedTail.map(normWord), snapTokens);
+    return alignToCommitted(this.#committedTail.map(normWord), snapTokens);
   }
 }
 
