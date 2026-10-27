@@ -93,12 +93,27 @@ export async function signIn(email: string, password: string): Promise<void> {
   writeSession(toSession(data, email));
 }
 
-export async function signOut(): Promise<void> {
+/** Fired on `window` when the server rejects our session (revoked/deleted). */
+export const SESSION_EXPIRED_EVENT = "interview-coach:session-expired";
+
+/** Drop the local session and tell the UI to show the login screen. */
+export function expireSession(): void {
+  writeSession(null);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+  }
+}
+
+/**
+ * Sign out. "local" ends only this device; "global" ends every session of this
+ * account on every device (Supabase revokes all of the user's refresh tokens).
+ */
+export async function signOut(scope: "local" | "global" = "local"): Promise<void> {
   const session = readSession();
   writeSession(null);
   if (!session) return;
   try {
-    await fetch(`${authBaseUrl()}/logout`, {
+    await fetch(`${authBaseUrl()}/logout?scope=${scope}`, {
       method: "POST",
       headers: {
         apikey: SUPABASE_ANON_KEY,

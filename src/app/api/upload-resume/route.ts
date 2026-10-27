@@ -1,4 +1,5 @@
 import { handleRouteError, jsonError, jsonOk } from "@/lib/api";
+import { assertAccess } from "@/lib/access";
 
 export const runtime = "nodejs";
 
@@ -10,6 +11,11 @@ const MAX_BYTES = 5 * 1024 * 1024; // 5MB
  * the file (e.g. scanned/image-only PDFs).
  */
 export async function POST(request: Request) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   try {
     const form = await request.formData();
     const file = form.get("file");

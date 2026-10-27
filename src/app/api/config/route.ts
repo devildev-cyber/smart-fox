@@ -1,4 +1,5 @@
-import { jsonOk } from "@/lib/api";
+import { handleRouteError, jsonOk } from "@/lib/api";
+import { assertAccess } from "@/lib/access";
 import { getRuntimeConfig } from "@/lib/runtime-config";
 
 export const runtime = "nodejs";
@@ -7,7 +8,12 @@ export const runtime = "nodejs";
  * Reports configuration status WITHOUT exposing any secret values. Used by the
  * Settings and Session pages to decide which features are available.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   const cfg = await getRuntimeConfig();
   const deepgramConfigured = Boolean(
     process.env.DEEPGRAM_API_KEY && process.env.DEEPGRAM_API_KEY.trim()

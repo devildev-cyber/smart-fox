@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { assertAccess } from "@/lib/access";
 import { handleRouteError, jsonError, jsonOk, parseBody } from "@/lib/api";
 import { storyInputSchema } from "@/lib/schemas";
 import { serializeStory } from "@/lib/repo";
@@ -9,6 +10,11 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   const { id } = await params;
   const { data, error } = await parseBody(request, storyInputSchema);
   if (error) return error;
@@ -36,9 +42,14 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   const { id } = await params;
   try {
     const existing = await prisma.story.findUnique({ where: { id } });

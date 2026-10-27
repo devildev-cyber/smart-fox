@@ -1,10 +1,16 @@
 import { prisma } from "@/lib/db";
+import { assertAccess } from "@/lib/access";
 import { handleRouteError, jsonOk, parseBody } from "@/lib/api";
 import { sessionInputSchema } from "@/lib/schemas";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   try {
     const rows = await prisma.interviewSession.findMany({
       orderBy: { updatedAt: "desc" },
@@ -33,6 +39,11 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   const { data, error } = await parseBody(request, sessionInputSchema);
   if (error) return error;
 

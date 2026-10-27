@@ -1,11 +1,17 @@
 import { prisma } from "@/lib/db";
+import { assertAccess } from "@/lib/access";
 import { handleRouteError, jsonOk, parseBody } from "@/lib/api";
 import { storyInputSchema } from "@/lib/schemas";
 import { serializeStory } from "@/lib/repo";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   try {
     const rows = await prisma.story.findMany({ orderBy: { updatedAt: "desc" } });
     return jsonOk(rows.map(serializeStory));
@@ -15,6 +21,11 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   const { data, error } = await parseBody(request, storyInputSchema);
   if (error) return error;
 

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { LogIn, LogOut } from "lucide-react";
+import { LogIn, LogOut, ShieldOff } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -17,6 +17,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import {
   getStoredEmail,
+  SESSION_EXPIRED_EVENT,
   getValidAccessToken,
   signIn,
   signOut,
@@ -43,6 +44,21 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       if (token) setEmail(getStoredEmail() ?? "");
       setStatus(token ? "in" : "out");
     })();
+  }, [configured]);
+
+  // The server rejected our token (user removed, sessions revoked): go back to
+  // the login screen instead of leaving a broken UI.
+  React.useEffect(() => {
+    if (!configured) return;
+    const onExpired = () => {
+      setStatus("out");
+      setEmail("");
+      toast.error("You were signed out", {
+        description: "Your session ended. Please sign in again.",
+      });
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
   }, [configured]);
 
   if (status === "loading") {
@@ -154,10 +170,10 @@ function SignOutButton({
 }) {
   const [busy, setBusy] = React.useState(false);
 
-  const handle = async () => {
+  const handle = async (scope: "local" | "global") => {
     setBusy(true);
     try {
-      await signOut();
+      await signOut(scope);
     } finally {
       onSignedOut();
     }
@@ -166,8 +182,25 @@ function SignOutButton({
   return (
     <div className="fixed bottom-3 right-3 z-50 flex items-center gap-2 rounded-md border border-border bg-card/90 px-2 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur">
       {email && <span className="max-w-[160px] truncate">{email}</span>}
-      <Button size="sm" variant="ghost" className="h-7 px-2" onClick={handle} disabled={busy}>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 px-2"
+        onClick={() => void handle("local")}
+        disabled={busy}
+      >
         {busy ? <Spinner /> : <LogOut className="h-3.5 w-3.5" />} Sign out
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 px-2"
+        onClick={() => void handle("global")}
+        disabled={busy}
+        title="Sign out on every device"
+        aria-label="Sign out on every device"
+      >
+        <ShieldOff className="h-3.5 w-3.5" />
       </Button>
     </div>
   );

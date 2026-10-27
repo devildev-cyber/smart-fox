@@ -1,9 +1,15 @@
 import { prisma } from "@/lib/db";
+import { assertAccess } from "@/lib/access";
 import { handleRouteError, jsonOk } from "@/lib/api";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   try {
     const [candidates, jobs] = await Promise.all([
       prisma.candidateProfile.findMany({

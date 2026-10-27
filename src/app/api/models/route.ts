@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { assertAccess } from "@/lib/access";
 import { z } from "zod";
 import { handleRouteError, jsonError, jsonOk, parseBody } from "@/lib/api";
 import { getRuntimeConfig } from "@/lib/runtime-config";
@@ -17,6 +18,11 @@ const bodySchema = z.object({
  * before saving it.
  */
 export async function POST(request: Request) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   const { data, error } = await parseBody(request, bodySchema);
   if (error) return error;
 

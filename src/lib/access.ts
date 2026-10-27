@@ -19,7 +19,12 @@ import {
 } from "./supabase";
 
 // Cache token verifications briefly to avoid a Supabase round-trip per request.
-const CACHE_TTL_MS = 5 * 60 * 1000;
+// Kept short on purpose: this is how long a revoked session can keep working.
+const CACHE_TTL_MS = 30 * 1000;
+// If Supabase is unreachable, keep trusting a token verified this recently so a
+// brief outage doesn't kick a signed-in user out mid-interview.
+const OUTAGE_GRACE_MS = 5 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 200;
 
 const verifyCache = new Map<string, { ok: boolean; at: number }>();
 
@@ -53,13 +58,20 @@ async function verifyToken(token: string): Promise<boolean> {
       },
       cache: "no-store",
     });
+    // A Supabase outage (5xx) is not a revocation: treat it like a network error.
+    if (res.status >= 500) throw new Error(`Auth service error ${res.status}`);
     const ok = res.ok;
+    if (verifyCache.size >= MAX_CACHE_ENTRIES) {
+      for (const [key, value] of verifyCache) {
+        if (now - value.at > OUTAGE_GRACE_MS) verifyCache.delete(key);
+      }
+      if (verifyCache.size >= MAX_CACHE_ENTRIES) verifyCache.clear();
+    }
     verifyCache.set(token, { ok, at: now });
     return ok;
   } catch {
-    // Network failure: trust a recent successful verification if we have one, so
-    // a brief outage doesn't kick out a signed-in user mid-interview.
-    if (cached?.ok) return true;
+    // Network failure only (a 401/403 from Supabase is a real "no" above).
+    if (cached?.ok && now - cached.at < OUTAGE_GRACE_MS) return true;
     return false;
   }
 }

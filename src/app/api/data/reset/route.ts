@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { assertAccess } from "@/lib/access";
 import { handleRouteError, jsonOk } from "@/lib/api";
 
 export const runtime = "nodejs";
@@ -8,7 +9,12 @@ export const runtime = "nodejs";
  * Ordered to respect foreign keys (turns cascade with sessions, but we clear
  * explicitly for clarity).
  */
-export async function POST() {
+export async function POST(request: Request) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   try {
     await prisma.interviewTurn.deleteMany();
     await prisma.interviewSession.deleteMany();

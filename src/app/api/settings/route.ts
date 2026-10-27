@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assertAccess } from "@/lib/access";
 import { handleRouteError, jsonOk, parseBody } from "@/lib/api";
 import { getRuntimeConfig, maskKey, saveAppConfig } from "@/lib/runtime-config";
 
@@ -26,7 +27,12 @@ async function status() {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   try {
     return jsonOk(await status());
   } catch (err) {
@@ -35,6 +41,11 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   const { data, error } = await parseBody(request, settingsPatchSchema);
   if (error) return error;
 

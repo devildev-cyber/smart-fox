@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { assertAccess } from "@/lib/access";
 import { handleRouteError, jsonError, jsonOk, parseBody } from "@/lib/api";
 import { turnInputSchema } from "@/lib/schemas";
 import { safeJsonParse } from "@/lib/utils";
@@ -9,6 +10,11 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   const { id } = await params;
   const { data, error } = await parseBody(request, turnInputSchema);
   if (error) return error;

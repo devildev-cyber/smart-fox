@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assertAccess } from "@/lib/access";
 import { prisma } from "@/lib/db";
 import { handleRouteError, jsonError, jsonOk, parseBody } from "@/lib/api";
 import { safeJsonParse } from "@/lib/utils";
@@ -11,9 +12,14 @@ const sessionPatchSchema = z.object({
 });
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   const { id } = await params;
   try {
     const session = await prisma.interviewSession.findUnique({
@@ -59,6 +65,11 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   const { id } = await params;
   const { data, error } = await parseBody(request, sessionPatchSchema);
   if (error) return error;
@@ -81,9 +92,14 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  try {
+    await assertAccess(request);
+  } catch (err) {
+    return handleRouteError(err);
+  }
   const { id } = await params;
   try {
     const existing = await prisma.interviewSession.findUnique({ where: { id } });

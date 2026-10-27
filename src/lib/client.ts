@@ -1,4 +1,5 @@
-import { getValidAccessToken } from "./supabase-auth";
+import { expireSession, getValidAccessToken } from "./supabase-auth";
+import { isSupabaseConfigured } from "./supabase";
 
 export interface ApiSuccess<T> {
   ok: true;
@@ -31,6 +32,8 @@ export async function apiFetch<T>(
       ...init?.headers,
     },
   });
+
+  if (res.status === 401 && isSupabaseConfigured()) expireSession();
 
   let payload: ApiResponse<T> | null = null;
   try {
@@ -71,6 +74,8 @@ export async function streamFetch(
       ...init.headers,
     },
   });
+
+  if (res.status === 401 && isSupabaseConfigured()) expireSession();
 
   if (!res.ok || !res.body) {
     let message = `Request failed with status ${res.status}`;
