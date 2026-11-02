@@ -40,14 +40,8 @@ export const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
 };
 
 export const ANSWER_MODE_LABELS: Record<AnswerMode, string> = {
-  default: "Default",
-  shorter: "Shorter",
-  more_senior: "More senior",
-  star: "STAR",
-  technical: "Technical",
-  human: "Human",
-  safer: "Safer",
-  follow_up: "Follow-up",
+  brief: "Brief",
+  deep: "Deep",
 };
 
 export const INTERVIEW_STAGE_LABELS: Record<InterviewStage, string> = {
@@ -56,15 +50,6 @@ export const INTERVIEW_STAGE_LABELS: Record<InterviewStage, string> = {
   behavioral: "Behavioral",
   technical: "Technical / system design",
   culture_fit: "Culture / values (final)",
-};
-
-// Short helper text shown under the session-page stage selector.
-export const INTERVIEW_STAGE_HINTS: Record<InterviewStage, string> = {
-  general: "Adapts to each question",
-  recruiter_hr: "Short, warm, high-level",
-  behavioral: "STAR stories, ownership",
-  technical: "Deep, precise, tradeoffs",
-  culture_fit: "Casual, values, fit",
 };
 
 export const CONFIDENCE_LABELS: Record<Confidence, string> = {
@@ -82,9 +67,6 @@ export const NAV_ITEMS = [
 ] as const;
 
 export interface AppSettings {
-  defaultAnswerMode: AnswerMode;
-  /** Which interview round to assume at the start of a session. */
-  defaultInterviewStage: InterviewStage;
   autoAnswer: boolean;
   boldKeywords: boolean;
   /**
@@ -100,7 +82,6 @@ export interface AppSettings {
    * included (most accurate, but it can take minutes and costs far more).
    */
   codingBaseModel: boolean;
-  maxSentences: number;
   transcriptWindowSeconds: number;
   /** Length of each OpenAI transcription segment, in seconds. Lower = less lag. */
   sttSegmentSeconds: number;
@@ -133,13 +114,10 @@ export const ANSWER_FONT_SIZE_LABELS: Record<AnswerFontSize, string> = {
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  defaultAnswerMode: "default",
-  defaultInterviewStage: "general",
   autoAnswer: false,
   boldKeywords: false,
   allowInventedDetails: true,
   codingBaseModel: true,
-  maxSentences: 4,
   transcriptWindowSeconds: 90,
   sttSegmentSeconds: 4,
   sttLanguage: "en",

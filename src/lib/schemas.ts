@@ -181,17 +181,17 @@ export type QuestionType = z.infer<typeof questionTypeSchema>;
 export const confidenceSchema = z.enum(["high", "medium", "low"]);
 export type Confidence = z.infer<typeof confidenceSchema>;
 
-export const answerModeSchema = z.enum([
-  "default",
-  "shorter",
-  "more_senior",
-  "star",
-  "technical",
-  "human",
-  "safer",
-  "follow_up",
-]);
-export type AnswerMode = z.infer<typeof answerModeSchema>;
+// How long an answer is. Every answer is already human and specific; the only
+// choice is how much to say. Older saved values (settings in localStorage) are
+// mapped onto these two.
+export const answerModeSchema = z.preprocess(
+  (v) =>
+    v === "deep" || v === "technical" || v === "more_senior" || v === "star"
+      ? "deep"
+      : "brief",
+  z.enum(["brief", "deep"])
+);
+export type AnswerMode = "brief" | "deep";
 
 // Which interview round we're in. Sets the overall depth + tone calibration for
 // every answer in the session (recruiter screens stay light, technical rounds go
@@ -389,11 +389,12 @@ export const generateAnswerRequestSchema = z
     // utterance the candidate clicked to answer). The model can still correct it.
     focusHint: z.string().default(""),
     questionType: questionTypeSchema.optional(),
-    answerMode: answerModeSchema.default("default"),
-    interviewStage: interviewStageSchema.default("general"),
+    answerMode: answerModeSchema.default("brief"),
     answerLanguage: answerLanguageSchema.default("en"),
-    maxSentences: z.number().int().min(1).max(8).default(4),
     boldKeywords: z.boolean().default(false),
+    // The BRIEF answer the candidate was just shown for this same question, when
+    // they ask to go deeper. The deep answer extends it instead of starting over.
+    expandOn: z.string().max(4000).default(""),
     // When true (default) the model may fill thin spots with realistic,
     // consistent specifics; false pins it to only what's in the supplied context.
     allowInventedDetails: z.boolean().default(true),
@@ -413,12 +414,9 @@ export const generateAnswerRequestSchema = z
 export const rewriteAnswerRequestSchema = z.object({
   detectedQuestion: z.string().min(1),
   answer: z.string().min(1, "An existing answer is required"),
-  answerMode: answerModeSchema,
-  interviewStage: interviewStageSchema.default("general"),
   answerLanguage: answerLanguageSchema.default("en"),
   candidateProfileId: z.string().optional(),
   jobProfileId: z.string().optional(),
-  maxSentences: z.number().int().min(1).max(8).default(4),
   boldKeywords: z.boolean().default(false),
 });
 
@@ -545,7 +543,7 @@ export const turnInputSchema = z.object({
   detectedQuestion: z.string().default(""),
   questionType: z.string().default("other"),
   generatedAnswer: z.string().default(""),
-  answerMode: z.string().default("default"),
+  answerMode: z.string().default("brief"),
   interviewStage: z.string().default("general"),
   keywords: z.array(z.string()).default([]),
   confidence: z.string().default("medium"),

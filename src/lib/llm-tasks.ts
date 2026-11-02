@@ -9,7 +9,6 @@ import {
   CODING_CONTINUE_PROMPT,
   CODING_TALK_PROMPT,
   CANDIDATE_EXTRACT_PROMPT,
-  INTERVIEW_STAGE_INSTRUCTIONS,
   JOB_EXTRACT_PROMPT,
   languageBlock,
   POSITIONING_BRIEF_PROMPT,
@@ -34,7 +33,6 @@ import {
   type AnswerLanguage,
   type AnswerMode,
   type CandidateStructured,
-  type InterviewStage,
   type JobStructured,
   type PositioningBrief,
   type SharpenStory,
@@ -124,31 +122,8 @@ export async function generatePositioningBrief(params: {
   });
 }
 
-// Per-round sampling temperature. Technical rounds want precision (lower);
-// recruiter and culture chats want warmth and variety (higher). The "human"
-// mode always nudges things looser on top of the stage baseline.
-const STAGE_TEMPERATURE: Record<string, number> = {
-  general: 0.55,
-  technical: 0.4,
-  behavioral: 0.5,
-  recruiter_hr: 0.55,
-  culture_fit: 0.6,
-};
-
-function answerTemperature(stage: InterviewStage | undefined, mode: AnswerMode): number {
-  const base = STAGE_TEMPERATURE[stage ?? "general"] ?? 0.55;
-  // "human" mode loosens tone a little, but not so much it rambles or drifts
-  // off the facts.
-  if (mode === "human") return Math.max(base, 0.7);
-  return base;
-}
-
-function stageBlock(stage: InterviewStage | undefined): string {
-  const instruction =
-    INTERVIEW_STAGE_INSTRUCTIONS[stage ?? "general"] ??
-    INTERVIEW_STAGE_INSTRUCTIONS.general;
-  return `INTERVIEW STAGE (sets the depth + tone for this round; takes priority over the generic DEPTH guidance when they differ):\n${instruction}`;
-}
+// Loose enough to sound like a person talking, tight enough to stay on the facts.
+const ANSWER_TEMPERATURE = 0.6;
 
 /**
  * Generate a live interview answer as streamed Markdown deltas (answer body
@@ -164,10 +139,10 @@ export async function streamGenerateAnswer(params: {
   stories?: StoryLike[];
   positioning?: PositioningBrief | null;
   answerMode: AnswerMode;
-  interviewStage?: InterviewStage;
   answerLanguage?: AnswerLanguage;
-  maxSentences: number;
   boldKeywords: boolean;
+  /** The brief answer already shown for this question; "deep" extends it. */
+  expandOn?: string;
   /** When true, the model fills gaps with plausible, consistent specifics; off = strict grounding. */
   allowInventedDetails?: boolean;
   rawResumeFallback?: string;
@@ -206,7 +181,12 @@ export async function streamGenerateAnswer(params: {
   });
 
   const modeInstruction =
-    ANSWER_MODE_INSTRUCTIONS[params.answerMode] ?? ANSWER_MODE_INSTRUCTIONS.default;
+    ANSWER_MODE_INSTRUCTIONS[params.answerMode] ?? ANSWER_MODE_INSTRUCTIONS.brief;
+
+  const expandInstruction =
+    params.answerMode === "deep" && params.expandOn?.trim()
+      ? `\n\nEXPANDING: the candidate was just shown this BRIEF answer to the same question:\n"""\n${params.expandOn.trim()}\n"""\nWrite the DEEP version of that SAME answer: same story, same facts, same opening point, with the next layer added. It replaces the brief one, so don't mention a brief version and don't switch to a different example.`
+      : "";
 
   const oneShotInstruction = oneShot
     ? "\n\nNO EXPLICIT QUESTION WAS PROVIDED. YOU decide what's being asked: identify the interviewer's most recent question or prompt (it's at the end of the transcript; a focus hint may point at it). If they packed several asks into that latest turn, answer each. Ignore the candidate's own speech, greetings, and filler. If the latest turn is not actually something to answer yet (acknowledgement, small talk, the candidate speaking, or an unfinished fragment), output exactly NO_ANSWER and nothing else."
@@ -219,10 +199,9 @@ export async function streamGenerateAnswer(params: {
   const depthInstruction = depth ? `\n\n${depth}` : "";
 
   const system = `${buildAnswerSystemPrompt(
-    params.maxSentences,
     params.boldKeywords,
     params.allowInventedDetails ?? true
-  )}\n\n${stageBlock(params.interviewStage)}${depthInstruction}\n\nMODE:\n${modeInstruction}${oneShotInstruction}${languageInstruction}`;
+  )}${depthInstruction}\n\nMODE:\n${modeInstruction}${expandInstruction}${oneShotInstruction}${languageInstruction}`;
 
   // Live answers use the user-selectable "live answer" model (fastModel) so the
   // teleprompter streams quickly; heavy analysis stays on the strong model.
@@ -230,7 +209,7 @@ export async function streamGenerateAnswer(params: {
     model: (await getRuntimeConfig()).fastModel,
     system,
     user: context,
-    temperature: answerTemperature(params.interviewStage, params.answerMode),
+    temperature: ANSWER_TEMPERATURE,
   });
 }
 
@@ -403,30 +382,16 @@ export async function* streamCodingSolution(params: {
   }
 }
 
-/** Rewrite an existing answer into a new mode, streamed as Markdown + ---META---. */
+/** Cut an existing answer down to the brief version, streamed as text + ---META---. */
 export async function streamRewriteAnswer(params: {
   detectedQuestion: string;
   answer: string;
-  answerMode: AnswerMode;
-  interviewStage?: InterviewStage;
   answerLanguage?: AnswerLanguage;
   candidate?: CandidateStructured | null;
   job?: JobStructured | null;
-  maxSentences: number;
   boldKeywords: boolean;
 }) {
-  const modeInstruction =
-    ANSWER_MODE_INSTRUCTIONS[params.answerMode] ?? ANSWER_MODE_INSTRUCTIONS.default;
-
   const constraints: string[] = [];
-  if (params.maxSentences > 0) {
-    constraints.push(
-      `Keep it to a lead line plus at most ${Math.max(
-        2,
-        Math.min(params.maxSentences, 5)
-      )} short bullets.`
-    );
-  }
   constraints.push(
     params.boldKeywords
       ? "Emphasis: bold 1 to 3 key terms with double asterisks."
@@ -436,7 +401,6 @@ export async function streamRewriteAnswer(params: {
   const userParts = [
     `QUESTION:\n${params.detectedQuestion}`,
     `EXISTING ANSWER:\n${params.answer}`,
-    `TARGET MODE:\n${modeInstruction}`,
   ];
   if (params.candidate) {
     userParts.push(
@@ -452,11 +416,11 @@ export async function streamRewriteAnswer(params: {
   return streamText({
     // Same selectable "live answer" model as generation.
     model: (await getRuntimeConfig()).fastModel,
-    system: `${REWRITE_PROMPT}\n\n${stageBlock(params.interviewStage)}${languageInstruction}\n\nCONSTRAINTS:\n- ${constraints.join(
+    system: `${REWRITE_PROMPT}${languageInstruction}\n\nCONSTRAINTS:\n- ${constraints.join(
       "\n- "
     )}`,
     user: userParts.join("\n\n"),
-    temperature: answerTemperature(params.interviewStage, params.answerMode),
+    temperature: ANSWER_TEMPERATURE,
   });
 }
 

@@ -9,14 +9,14 @@ import { BANNED_PHRASES } from "./answer-style";
 const BANNED_LIST = BANNED_PHRASES.map((p) => `"${p}"`).join(", ");
 
 export const PROMPT_VERSIONS = {
-  answer: "answer-v15",
+  answer: "answer-v16",
   candidateExtract: "candidate-extract-v2",
   jobExtract: "job-extract-v1",
   storyPlan: "story-plan-v1",
   storyGen: "story-gen-v3",
   storyImprove: "story-improve-v1",
   storySharpen: "story-sharpen-v1",
-  rewrite: "rewrite-v6",
+  rewrite: "rewrite-v7",
   review: "review-v1",
   positioning: "positioning-v6",
   coding: "coding-v6",
@@ -40,7 +40,7 @@ WHAT A PERFECT ANSWER IS — five things at once:
 2. POWERFUL = a point and a stance. Before writing, silently decide the ONE thing the candidate is really trying to say, and build around it. A pile of correct statements is not an answer. Points sound like: "I owned this part, not the whole system." "It worked at small scale and fell over under real traffic." "The hard part was organizational, not technical." "I pushed for tests because we'd already broken that flow twice." Let the point shape the answer; never announce it as a slogan or a formal lesson. Show real perspective when it is true — pride, frustration, doubt, relief ("Honestly, that part was frustrating — we kept fixing the symptom and it came back") — and never fake it or force a positive lesson out of every hard situation.
 3. SPECIFIC FROM REAL EXPERIENCE. What proves someone did the work is not a tool list, it is a CHOICE and its CONSEQUENCE: what they picked over what, why, and what actually happened — including what went wrong or surprised them. Add one or two LIVED details only the person who did it would know: what they noticed first, what broke, what people were doing by hand, what a dashboard showed. One concrete memory beats three generic claims.
 4. SPOKEN, NOT WRITTEN. Short thoughts that still make sense if the candidate pauses or is interrupted after any sentence. Plain words around exact technical terms. Contractions where natural ("I've", "we'd", "honestly", "I mean") — fewer on logistics, pay, and formal facts. Rough edges are fine (a fragment, a small self-correction, an aside); a polished, seamless paragraph is the tell.
-5. RIGHT-SIZED AND SOLID. As long as the question deserves and no longer (see DEPTH). Every sentence must hold up under a follow-up: have the next layer ready (what, why, what happened next) and stay consistent with everything already said.
+5. BRIEF AND SOLID. Say less, and make every sentence earn its place. The MODE block at the end sets the exact length (BRIEF is the default); it always wins over any habit of explaining more. Every sentence must still hold up under a follow-up: have the next layer ready and stay consistent with everything already said.
 
 THE TEST: could any other candidate have said this exact answer? If yes, it is generic — replace the generic part with THIS candidate's own decision, detail, or opinion. Pull from DIFFERENT experiences across answers and vary your openers; don't start every answer with "At <company>, …" or "Yeah, so".
 
@@ -57,14 +57,14 @@ WHERE DETAILS COME FROM — your job is the best, most real-sounding answer. In 
 5. REASONING — when a detail doesn't fit, be specific in HOW THE CANDIDATE THINKS: what they'd check first, the tradeoff and why, what usually goes wrong and how they'd catch it.
 Whatever you say becomes canon for the rest of the interview: the next answer, and any coding question, must stay consistent with it. Before inventing, check SESSION MEMORY and the context for something already established, and reuse that instead.
 
-DEPTH — the interviewer's INTENT decides, not a fixed template or word count:
-- Simple / logistics (notice period, availability, salary, work authorization, "do you know X?", yes/no) -> just the fact they asked for, one short line. Add only the context that removes doubt. Never turn logistics into a story.
-- Brief experience check ("have you used Kafka?", "managed people?") -> a clear yes / no / qualified answer first, then one line on where it came from and how deep it really goes. Not a full project story.
-- Background / project / behavioral -> tell it the way a person remembers it: enough that they get what the work was, why it mattered, the candidate's part, and what happened. Start wherever it's most natural (the problem, a decision, a concrete memory, the result) — do NOT force a fixed Situation-Task-Action-Result-Lesson shape.
-- Technical -> enough depth to prove they understand the SPECIFIC thing asked: the decision, the tradeoff, what failed, how it was diagnosed. When they ask "why", give the reasoning; "how", the implementation; "what failed", the failure directly. Don't explain the whole system when they asked about one decision. Exact technical words, simple spoken language around them. Leave room for follow-ups.
-- Follow-ups -> answer only the NEW part, using facts already established; usually shorter. Don't restart the story.
-- "Tell me about yourself" -> a tight 3 to 4 sentence spoken pitch matched to THIS role, not a bio.
-- Match the amount to what they clearly want. Don't pad a complete answer to sound impressive; don't shrink an important experience until the project, ownership, decision, or result gets lost.
+WHAT TO SAY — the interviewer's INTENT decides the content; the MODE block decides the length:
+- Simple / logistics (notice period, availability, salary, work authorization, "do you know X?", yes/no) -> just the fact they asked for, one short line, always, in every mode. Never turn logistics into a story.
+- Brief experience check ("have you used Kafka?", "managed people?") -> a clear yes / no / qualified answer first, then one line on where it came from.
+- Background / project / behavioral -> tell it the way a person remembers it, starting wherever it's most natural (the problem, a decision, a concrete memory, the result). No Situation-Task-Action-Result labels.
+- Technical -> prove they understand the SPECIFIC thing asked: the decision, the tradeoff, what failed. "Why" gets the reasoning, "how" the implementation, "what failed" the failure. Exact technical words, simple spoken language around them.
+- Follow-ups -> only the NEW part, using facts already established. Don't restart the story.
+- "Tell me about yourself" -> a spoken pitch matched to THIS role, not a bio.
+- WHO'S ASKING: read it from the questions. A recruiter or HR person gets plain words, outcomes and impact, no jargon. An engineer gets exact terms and the real tradeoffs. A founder or manager gets values, judgment and why this team. Adjust vocabulary and depth of detail to them, never the length rules.
 
 TYPICAL AI vs REAL — the SHAPE and VOICE to hit. These examples are fictional: never reuse their facts, only their shape. Use the candidate's own experience.
 Q: "Tell me about a production incident you handled."
@@ -84,11 +84,12 @@ AI TELLS — structure gives it away as much as vocabulary:
 - Hedging stacks ("I think maybe it could possibly…").
 - BANNED words and phrases (they scream AI/corporate): ${BANNED_LIST}.
 
-OUTPUT FORMAT (GitHub-flavored Markdown, no code fences):
-- Start with the single most important line — the thing to say first.
-- Add "- " bullets ONLY when they genuinely help (a real behavioral / technical / multi-part answer). A trivial or brief-check answer is JUST that one line — no bullets. Don't force STAR.
-- If the interviewer asked SEVERAL distinct things, answer each as its own numbered block ("1.", "2.", …) separated by a blank line. Never number a single-question answer.
-- Keep it easy to say if the candidate pauses or gets interrupted: main point early, complete spoken thoughts, not too many names/metrics/nested details at once.
+OUTPUT FORMAT (plain text, no code fences):
+- Plain spoken sentences, nothing else: no bullets, no headings, no bold labels, no "First/Second/Finally". Start with the thing to say first.
+- If the interviewer asked SEVERAL distinct things, answer each as its own short block separated by a blank line (number them "1.", "2." only then). Never number a single-question answer.
+- Easy to say if the candidate pauses or gets interrupted: main point early, complete spoken thoughts, few names and numbers at once.
+
+SELF-CHECK before you output: read it as if you were saying it out loud to a colleague across a table. If any sentence sounds like an essay, a LinkedIn post, or an AI answer, say it the way a person would. Then cut every sentence that isn't needed, and stay inside the length in the MODE block.
 
 SESSION MEMORY: "WHAT YOU'VE ALREADY SAID" lists the earlier answers in THIS interview, and "CODING THIS SESSION" lists what the candidate solved. All of it is canon: same projects, tech, numbers, names, opinions. Never contradict it, never repeat an answer in full. A follow-up goes DEEPER into the same story using those same details, as if the candidate is continuing their own memory. If the interviewer asks about the code just written, answer from CODING THIS SESSION. A brief natural callback is fine; don't force one.
 
@@ -220,15 +221,14 @@ Return JSON only:
   ]
 }`;
 
-export const REWRITE_PROMPT = `You rewrite an existing spoken interview answer into a new mode WITHOUT changing facts.
-Keep all concrete companies, tools, metrics, projects, titles, and years exactly as given.
-Do not add new specific claims. Keep it natural and easy to say out loud.
+export const REWRITE_PROMPT = `You make an existing spoken interview answer BRIEF without changing facts.
+Keep the point, the one detail that makes it real, and every concrete company, tool, metric, project, title, and year exactly as given. Do not add new claims.
 
-TONE: sound like a real person talking, not writing — short spoken thoughts (one idea each, no run-ons), contractions, specific. Keep the lived detail and the point of the answer; a rewrite must not flatten them into something generic. Exact technical terms stay exact, and a technical sentence may run longer than a casual one if it needs to. No corporate filler (see the banned list in the main prompt: "passionate about", "leverage", "robust", "seamless", "excited to", "ultimately"), no hedging, no throat-clearing openers, no tidy moral at the end.
+TONE: a real person talking, not writing: short spoken thoughts, contractions, plain words around exact technical terms. No corporate filler (see the banned list in the main prompt: "passionate about", "leverage", "robust", "seamless", "excited to", "ultimately"), no hedging, no throat-clearing opener, no tidy moral at the end.
 
-LENGTH: match the question. If the original answers a simple/factual/logistics question, keep it to ONE short line with no bullets. Only use bullets when they genuinely help (behavioral STAR, technical depth, multi-part).
+LENGTH: 2 to 4 short sentences, about 30 to 60 words, never more than 70. A simple, factual or logistics answer is ONE short line. No bullets, no headings.
 
-Output GitHub-flavored Markdown (no code fences): start with the most important line the candidate says first, then bullets ("- ") ONLY if the length rule calls for them. Follow the emphasis instruction in CONSTRAINTS for any bolding. Then output the metadata block EXACTLY in this form and nothing after it:
+Output plain text: the answer the candidate says. Then output the metadata block EXACTLY in this form and nothing after it:
 
 ---META---
 {"detected_question": "...", "keywords": ["..."], "confidence": "high | medium | low", "risk_note": "short note if the answer may be unsupported, else empty", "possible_follow_up": "one likely follow-up question"}`;
@@ -287,42 +287,13 @@ Return JSON only:
   "follow_up_email": "a short, professional thank-you email draft the candidate can send"
 }`;
 
-/* ----------------------------- Interview stage ----------------------------- */
-
-// The interview ROUND sets the overall depth + tone for every answer. When the
-// stage guidance and the generic DEPTH rule disagree, the stage wins (e.g. a
-// recruiter screen keeps even a technical question light and high-level).
-export const INTERVIEW_STAGE_INSTRUCTIONS: Record<string, string> = {
-  general:
-    "Mixed / unknown round — no special calibration. Read each question and match depth and tone to it on the fly.",
-  recruiter_hr:
-    "RECRUITER / HR SCREEN. The interviewer is usually non-technical, screening for fit, motivation, communication, and logistics. Keep answers HIGH-LEVEL, simple, and confident — outcomes and impact, not deep architecture. Drop jargon and code-level detail unless they explicitly ask. Logistics (notice, salary, location, why leaving) get one clean line. 'Tell me about yourself' is a tight 3 to 4 sentence pitch matched to this role: who you are, what you're great at, what you want next. Sound friendly and easy to talk to.",
-  behavioral:
-    "BEHAVIORAL / LEADERSHIP ROUND. They want how you actually work — ownership, conflict, impact, collaboration, handling failure. Tell ONE real example the way a person remembers it: where it started, what you decided and why, what happened, what you'd do differently if that is true. No Situation/Task/Action/Result labels. Emphasize YOUR decisions and the 'why', not just what the team did. Bullets only if they genuinely help; a number only if it is naturally part of the story, never to sound impressive.",
-  technical:
-    "TECHNICAL / SYSTEM DESIGN ROUND. The interviewer is an engineer probing real depth. Be precise and senior, but keep it easy to read fast. Lead with the approach, then bullets on the exact tools and architecture, the key tradeoffs, and how you handled scale / reliability / failure — with a real production example. Go deeper here than in other rounds, but still short spoken sentences, no lecturing. If you'd ask a clarifying question first, say it in one line before diving in.",
-  culture_fit:
-    "CULTURE / VALUES ROUND (often final, with a founder or hiring manager). This is the most CASUAL and human round. Talk like a normal person over coffee — values, working style, what motivates you, why THIS company and team. Light structure: mostly a short spoken narrative, bullets only if they genuinely help. Show real interest and self-awareness; honest and specific beats polished. Keep tech light unless they bring it up.",
-};
-
 /* ----------------------------- Mode instructions ----------------------------- */
 
 export const ANSWER_MODE_INSTRUCTIONS: Record<string, string> = {
-  default:
-    "Default mode: no special transformation — just answer well, matching depth to the interviewer's intent per the rules above.",
-  shorter:
-    "SHORTER: cut the unnecessary explanation while keeping the answer complete and human — the point still has to land. One spoken line if possible; at most one bullet on the single strongest point.",
-  more_senior:
-    "MORE SENIOR / MORE CERTAIN: same length rules, but lean the content toward ownership, tradeoffs, scale, reliability, and judgment. Remove weak, vague, or over-cautious wording so the candidate's role and stance are clear — without exaggerating beyond the real experience.",
-  star: "STAR mode: use explicit light Situation-Task-Action-Result bullets with one concrete example, even if the question isn't strictly behavioral. Spoken, not robotic — don't let the framework flatten the human point.",
-  technical:
-    "DEEPER / TECHNICAL: add architecture, implementation, production behavior, and tradeoff detail on the SPECIFIC thing asked — how it worked, what failed, why a design was chosen — while keeping spoken language. Only as deep as the question warrants; don't explain unrelated parts.",
-  human:
-    "MORE HUMAN: make it less written, less seamless, less neutral. Add a clear personal point, natural spoken wording, one lived detail, and real perspective (what they owned, pushed for, were frustrated or proud about). Keep the lead line; at most one or two loose bullets, often none. Don't just add fillers.",
-  safer:
-    "Safer mode: remove any unsupported tools, metrics, projects, or claims. Use general, defensible language.",
-  follow_up:
-    "Follow-up mode: instead of answering, the body should be the single most likely follow-up question as the bold lead line, then compact prep bullets for it. Still emit the ---META--- block.",
+  brief:
+    "BRIEF (the default). The whole answer is 2 to 4 short spoken sentences, about 30 to 60 words, and never more than 70 words, even for a story or a technical question. Lead with the answer or the point, add the ONE detail that makes it real (a choice and what happened, or what broke), and stop. Logistics and yes/no: one line under 15 words. No bullets. Brief means the strongest 20% of what you could say, still in a natural human voice, never clipped or robotic.",
+  deep:
+    "DEEP. A fuller answer for when the interviewer wants real depth: about 90 to 140 words, never more than 160 words, in short spoken sentences, no bullets. Point first, then the decision and why, what happened or what broke, and what was learned or changed only if it comes up naturally. Go deeper into the SPECIFIC thing asked, not wider. Logistics and yes/no questions stay one short line even here. Still sounds like a person remembering, not a report.",
 };
 
 /* ----------------------------- Answer language ----------------------------- */
@@ -358,7 +329,6 @@ export function questionDepthBlock(questionType: string | undefined): string {
 }
 
 export function buildAnswerSystemPrompt(
-  maxSentences: number,
   boldKeywords: boolean,
   allowInventedDetails = true
 ): string {
@@ -373,14 +343,6 @@ export function buildAnswerSystemPrompt(
       : "SPECIFICS (strict): use only tiers 1-3 and 5. Do NOT add any lived detail that isn't in the context. Be specific through the candidate's real facts and their reasoning instead."
   );
 
-  if (maxSentences && maxSentences > 0) {
-    extras.push(
-      `Hard length cap (a ceiling, NOT a target): never exceed the lead line plus ${Math.max(
-        2,
-        Math.min(maxSentences, 5)
-      )} short bullets. Trivial questions still get zero bullets — only real questions use them.`
-    );
-  }
   extras.push(
     boldKeywords
       ? "Emphasis: bold the 1 to 3 strongest keywords with **double asterisks** so they're easy to catch while speaking. Don't over-bold, and don't bold whole sentences."

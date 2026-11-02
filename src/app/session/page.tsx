@@ -73,9 +73,8 @@ import {
 // bridge (desktop app only).
 type CaptureChoice = CaptureSource | "livecaption";
 
-import type { AnswerMode, InterviewStage } from "@/lib/schemas";
-import { INTERVIEW_STAGE_LABELS, INTERVIEW_STAGE_HINTS } from "@/lib/constants";
-import { interviewStageSchema } from "@/lib/schemas";
+import type { AnswerMode } from "@/lib/schemas";
+import { ANSWER_MODE_LABELS } from "@/lib/constants";
 import type {
   ConfigStatus,
   AnswerResult,
@@ -152,9 +151,7 @@ export default function SessionPage() {
   const questionType = "other";
   const [answer, setAnswer] = React.useState<AnswerResult | null>(null);
   const [generating, setGenerating] = React.useState(false);
-  const [lastMode, setLastMode] = React.useState<AnswerMode>("default");
-  const [interviewStage, setInterviewStage] =
-    React.useState<InterviewStage>("general");
+  const [lastMode, setLastMode] = React.useState<AnswerMode>("brief");
   const [autoAnswer, setAutoAnswer] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   // Readiness signal so you know exactly when to press Generate.
@@ -212,12 +209,10 @@ export default function SessionPage() {
     detectedRef.current = detectedQuestion;
   }, [detectedQuestion]);
 
-  // Initialize autoAnswer + lastMode from settings once hydrated.
+  // Initialize autoAnswer from settings once hydrated.
   React.useEffect(() => {
     if (hydrated) {
       setAutoAnswer(settings.autoAnswer);
-      setLastMode(settings.defaultAnswerMode);
-      setInterviewStage(settings.defaultInterviewStage);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated]);
@@ -340,8 +335,12 @@ export default function SessionPage() {
     ].slice(-8);
   }, []);
 
-  const appendLog = React.useCallback((result: AnswerResult) => {
+  const appendLog = React.useCallback((result: AnswerResult, replaceLatest = false) => {
     setLog((prev) => {
+      const question = result.detected_question.trim() || "(question inferred)";
+      if (replaceLatest && prev[0] && prev[0].question === question) {
+        return [{ ...prev[0], answer: result.answer, confidence: result.confidence, riskNote: result.risk_note }, ...prev.slice(1)];
+      }
       const entry: LogEntry = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         question: result.detected_question.trim() || "(question inferred)",
@@ -473,7 +472,7 @@ export default function SessionPage() {
   const generate = React.useCallback(
     async (
       mode: AnswerMode,
-      opts: { override?: string; wide?: boolean; auto?: boolean } = {}
+      opts: { override?: string; wide?: boolean; auto?: boolean; expandOn?: string } = {}
     ) => {
       const question = (opts.override ?? detectedRef.current).trim();
 
@@ -541,12 +540,15 @@ export default function SessionPage() {
             focusHint,
             questionType,
             answerMode: mode,
-            interviewStage,
             answerLanguage: settings.answerLanguage,
-            maxSentences: settings.maxSentences,
             boldKeywords: settings.boldKeywords,
+            expandOn: opts.expandOn ?? "",
             allowInventedDetails: settings.allowInventedDetails,
-            priorTurns: priorTurnsRef.current,
+            // Going deeper replaces the answer just shown, so don't feed it
+            // back as something "already said".
+            priorTurns: opts.expandOn
+              ? priorTurnsRef.current.filter((t) => t.question !== question)
+              : priorTurnsRef.current,
             codingContext: codingForAnswers(codingHistoryRef.current),
           },
           question
@@ -578,7 +580,7 @@ export default function SessionPage() {
         const answered = result.detected_question.trim() || question;
         lastAnsweredRef.current = answered;
         pushPriorTurn(answered, result.answer);
-        appendLog(result);
+        appendLog(result, Boolean(opts.expandOn));
         setQuestionReady(false);
       } catch (err) {
         toast.error("Could not generate answer", {
@@ -590,7 +592,6 @@ export default function SessionPage() {
       candidateId,
       jobId,
       questionType,
-      interviewStage,
       recentForAnswer,
       recentTranscript,
       buildDelta,
@@ -601,38 +602,46 @@ export default function SessionPage() {
     ]
   );
 
+  // Brief / Deep toggle. With no answer yet it only picks the length for the
+  // next one. With an answer on screen: Deep writes the fuller version of the
+  // same answer, Brief cuts the current one down.
   const rewrite = React.useCallback(
     async (mode: AnswerMode) => {
-      // If there's no answer yet, generating in that mode is the right behavior.
       if (!answer || !answer.answer.trim()) {
-        await generate(mode);
+        setLastMode(mode);
         return;
       }
+      if (mode === lastModeRef.current) return;
       setLastMode(mode);
       const baseQuestion = detectedRef.current.trim() || answer.detected_question;
+      if (mode === "deep") {
+        await generate("deep", {
+          override: baseQuestion || undefined,
+          wide: !baseQuestion,
+          expandOn: answer.answer,
+        });
+        return;
+      }
       try {
         await streamAnswer(
           "/api/rewrite-answer/stream",
           {
             detectedQuestion: baseQuestion || answer.answer.slice(0, 80),
             answer: answer.answer,
-            answerMode: mode,
-            interviewStage,
             answerLanguage: settings.answerLanguage,
             candidateProfileId: candidateId || undefined,
             jobProfileId: jobId || undefined,
-            maxSentences: settings.maxSentences,
             boldKeywords: settings.boldKeywords,
           },
           baseQuestion
         );
       } catch (err) {
-        toast.error("Could not rewrite answer", {
+        toast.error("Could not shorten answer", {
           description: err instanceof Error ? err.message : "Unknown error",
         });
       }
     },
-    [answer, generate, candidateId, jobId, interviewStage, settings, streamAnswer]
+    [answer, generate, candidateId, jobId, settings, streamAnswer]
   );
 
   /* --------------------------- Live transcript --------------------------- */
@@ -812,7 +821,6 @@ export default function SessionPage() {
           questionType,
           generatedAnswer: answer.answer,
           answerMode: lastMode,
-          interviewStage,
           keywords: answer.keywords,
           confidence: answer.confidence,
           riskNote: answer.risk_note,
@@ -834,7 +842,7 @@ export default function SessionPage() {
     } finally {
       setSaving(false);
     }
-  }, [answer, ensureSession, recentTranscript, questionType, lastMode, interviewStage]);
+  }, [answer, ensureSession, recentTranscript, questionType, lastMode]);
 
   /* --------------------------- Keyboard shortcuts --------------------------- */
 
@@ -985,7 +993,7 @@ export default function SessionPage() {
   const primaryRef = React.useRef<(fromGlobal: boolean) => void>(() => {});
   primaryRef.current = (fromGlobal) => {
     if (tabRef.current !== "code") {
-      void generateRef.current(settings.defaultAnswerMode);
+      void generateRef.current(lastModeRef.current);
       return;
     }
     const hasInputs =
@@ -1048,13 +1056,10 @@ export default function SessionPage() {
         const key = e.key.toLowerCase();
         if (key === "s") {
           e.preventDefault();
-          void rewriteRef.current("shorter");
-        } else if (key === "t") {
+          void rewriteRef.current("brief");
+        } else if (key === "d") {
           e.preventDefault();
-          void rewriteRef.current("technical");
-        } else if (key === "h") {
-          e.preventDefault();
-          void rewriteRef.current("human");
+          void rewriteRef.current("deep");
         } else if (key === "r") {
           e.preventDefault();
           void generateRef.current(lastModeRef.current, { wide: true });
@@ -1063,7 +1068,7 @@ export default function SessionPage() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [settings.defaultAnswerMode]);
+  }, []);
 
   // Global hotkey from the Electron overlay (works even when the call is focused).
   React.useEffect(() => {
@@ -1168,17 +1173,34 @@ export default function SessionPage() {
           <Button
             size="sm"
             className={cn("flex-1", readyGlow && "animate-pulse-dot")}
-            onClick={() => void generate(settings.defaultAnswerMode)}
+            onClick={() => void generate(lastMode)}
             disabled={generating}
           >
             <Sparkles className="h-4 w-4" /> Generate
           </Button>
-          <Button size="sm" variant="outline" onClick={() => void rewrite("shorter")} disabled={generating || viewedEntry !== null}>
-            Shorter
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => void rewrite("human")} disabled={generating || viewedEntry !== null}>
-            Human
-          </Button>
+          <div
+            role="group"
+            aria-label="Answer length"
+            className="flex shrink-0 overflow-hidden rounded-md border border-border"
+          >
+            {(["brief", "deep"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                aria-pressed={lastMode === m}
+                disabled={generating || viewedEntry !== null}
+                onClick={() => void rewrite(m)}
+                className={cn(
+                  "px-2.5 text-xs font-medium transition-colors disabled:opacity-50",
+                  lastMode === m
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-accent"
+                )}
+              >
+                {ANSWER_MODE_LABELS[m]}
+              </button>
+            ))}
+          </div>
           <Button
             size="icon"
             variant={showMore ? "secondary" : "ghost"}
@@ -1193,18 +1215,6 @@ export default function SessionPage() {
         </div>
         {showMore && (
           <div className="flex flex-wrap gap-1.5">
-            <Button size="sm" variant="outline" onClick={() => void rewrite("technical")} disabled={generating || viewedEntry !== null}>
-              Technical
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => void rewrite("more_senior")} disabled={generating || viewedEntry !== null}>
-              More senior
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => void rewrite("safer")} disabled={generating || viewedEntry !== null}>
-              Safer
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => void generate("follow_up")} disabled={generating}>
-              Predict follow-up
-            </Button>
             <Button size="sm" variant="ghost" onClick={() => void generate(lastMode, { wide: true })} disabled={generating}>
               <RefreshCw className="h-4 w-4" /> Regenerate
             </Button>
@@ -1219,7 +1229,7 @@ export default function SessionPage() {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !generating) {
               e.preventDefault();
-              void generate(settings.defaultAnswerMode);
+              void generate(lastMode);
             }
           }}
           placeholder="Or type the exact question and press Enter"
@@ -1419,24 +1429,6 @@ export default function SessionPage() {
                 placeholder="e.g. Meridian — backend screen"
                 className="h-9"
               />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Interview stage</Label>
-              <Select
-                value={interviewStage}
-                onValueChange={(v) => setInterviewStage(v as InterviewStage)}
-              >
-                <SelectTrigger className="h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {interviewStageSchema.options.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {INTERVIEW_STAGE_LABELS[s]} — {INTERVIEW_STAGE_HINTS[s]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
           </div>
 
@@ -1925,9 +1917,8 @@ function Banner({ children }: { children: React.ReactNode }) {
 function ShortcutHint() {
   const shortcuts = [
     ["⌘/Ctrl + Enter", "Generate"],
-    ["⌘/Ctrl + Shift + S", "Shorter"],
-    ["⌘/Ctrl + Shift + T", "Technical"],
-    ["⌘/Ctrl + Shift + H", "Human"],
+    ["⌘/Ctrl + Shift + S", "Brief"],
+    ["⌘/Ctrl + Shift + D", "Deep"],
     ["⌘/Ctrl + Shift + R", "Regenerate"],
     ["Alt + ← / →", "Earlier / later answer"],
     ["⌘/Ctrl + Shift + C", "Answer ⇄ Code"],

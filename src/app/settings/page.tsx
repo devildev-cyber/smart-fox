@@ -28,19 +28,13 @@ import { apiFetch } from "@/lib/client";
 import { getElectronAPI } from "@/lib/electron";
 import { useSettings } from "@/hooks/use-settings";
 import {
-  ANSWER_MODE_LABELS,
   ANSWER_FONT_SIZE_LABELS,
   ANSWER_LANGUAGES,
-  INTERVIEW_STAGE_LABELS,
   STT_LANGUAGES,
   type AnswerFontSize,
 } from "@/lib/constants";
 import {
-  answerModeSchema,
-  interviewStageSchema,
   type AnswerLanguage,
-  type AnswerMode,
-  type InterviewStage,
 } from "@/lib/schemas";
 import type { ConfigStatus } from "@/lib/types";
 
@@ -134,50 +128,6 @@ export default function SettingsPage() {
         <CardContent className="space-y-5">
           <div className="grid gap-5 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label>Default answer mode</Label>
-              <Select
-                value={settings.defaultAnswerMode}
-                onValueChange={(v) =>
-                  update({ defaultAnswerMode: v as AnswerMode })
-                }
-                disabled={!hydrated}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {answerModeSchema.options
-                    .filter((m) => m !== "follow_up")
-                    .map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {ANSWER_MODE_LABELS[m]}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Default interview stage</Label>
-              <Select
-                value={settings.defaultInterviewStage}
-                onValueChange={(v) =>
-                  update({ defaultInterviewStage: v as InterviewStage })
-                }
-                disabled={!hydrated}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {interviewStageSchema.options.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {INTERVIEW_STAGE_LABELS[s]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
               <Label>Answer text size</Label>
               <Select
                 value={settings.answerFontSize}
@@ -220,22 +170,6 @@ export default function SettingsPage() {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="max-sentences">Max answer sentences</Label>
-              <Input
-                id="max-sentences"
-                type="number"
-                min={1}
-                max={8}
-                value={settings.maxSentences}
-                onChange={(e) =>
-                  update({
-                    maxSentences: clamp(parseInt(e.target.value, 10) || 4, 1, 8),
-                  })
-                }
-                disabled={!hydrated}
-              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="transcript-window">Transcript window (seconds)</Label>

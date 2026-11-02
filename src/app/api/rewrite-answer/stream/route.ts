@@ -33,12 +33,9 @@ export async function POST(request: Request) {
   const generator = await streamRewriteAnswer({
     detectedQuestion: data.detectedQuestion,
     answer: data.answer,
-    answerMode: data.answerMode,
-    interviewStage: data.interviewStage,
     answerLanguage: data.answerLanguage,
     candidate,
     job,
-    maxSentences: data.maxSentences,
     boldKeywords: data.boldKeywords,
   });
 
