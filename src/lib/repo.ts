@@ -35,6 +35,20 @@ export async function loadJobStructured(
   return parsed.success ? parsed.data : null;
 }
 
+/** A job profile with its raw job description text (needed to build a resume). */
+export async function loadJobWithRaw(
+  id: string | null | undefined
+): Promise<{ job: JobStructured | null; rawJobDescription: string } | null> {
+  if (!id) return null;
+  const row = await prisma.jobProfile.findUnique({ where: { id } });
+  if (!row) return null;
+  const parsed = jobStructuredSchema.safeParse(safeJsonParse(row.structuredJobJson, {}));
+  return {
+    job: parsed.success ? parsed.data : null,
+    rawJobDescription: row.rawJobDescription,
+  };
+}
+
 /** Load the cached positioning brief for a (candidate, job) pair, if any. */
 export async function loadPositioningBrief(
   candidateProfileId: string | null | undefined,

@@ -62,6 +62,7 @@ export const NAV_ITEMS = [
   { href: "/setup", label: "Setup" },
   { href: "/session", label: "Session" },
   { href: "/stories", label: "Stories" },
+  { href: "/resume", label: "Resume" },
   { href: "/history", label: "History" },
   { href: "/settings", label: "Settings" },
 ] as const;
