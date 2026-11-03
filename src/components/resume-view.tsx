@@ -2,10 +2,9 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { AlertTriangle, CheckCircle2, Copy, Download } from "lucide-react";
+import { Copy, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { resumeToMarkdown, resumeToText, type GeneratedResume, type ResumeIssue, type ResumeStats } from "@/lib/resume";
 
 export interface ResumeResult {
@@ -38,91 +37,20 @@ async function copy(text: string, what: string) {
 export function ResumeView({ result }: { result: ResumeResult }) {
   const { resume, issues, stats, corrections, timeline } = result;
   const notes = resume.verification_notes;
-  const [confirmed, setConfirmed] = React.useState<boolean[]>(() => notes.map(() => false));
-  React.useEffect(() => setConfirmed(notes.map(() => false)), [result]); // eslint-disable-line react-hooks/exhaustive-deps
-  const open = confirmed.filter((c) => !c).length;
   const fileBase = (resume.name || "resume").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+  const summaryLine = [
+    timeline.ambiguous ? "" : timeline.label,
+    `${stats.skillsCount} skills`,
+    `${stats.totalBullets} bullets`,
+    `${stats.numericPct}% with numbers`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const hasDetails = issues.length > 0 || corrections.length > 0;
 
   return (
     <div className="space-y-4">
-      {notes.length > 0 && (
-        <Card className="border-warning/40 bg-warning/5">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-base text-warning">
-              <AlertTriangle className="h-4 w-4" /> Confirm before you use this resume
-            </CardTitle>
-            <CardDescription>
-              These details were written for you, not taken from your record. Only keep what is
-              true for you, and change or remove the rest. {open} of {notes.length} still to check.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-1.5">
-            {notes.map((n, i) => (
-              <label key={i} className="flex cursor-pointer items-start gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={confirmed[i] ?? false}
-                  onChange={(e) =>
-                    setConfirmed((prev) => prev.map((c, j) => (j === i ? e.target.checked : c)))
-                  }
-                />
-                <span className={confirmed[i] ? "text-muted-foreground line-through" : ""}>{n}</span>
-              </label>
-            ))}
-          </CardContent>
-        </Card>
-      )}
-
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Checks</CardTitle>
-          <CardDescription>
-            {timeline.ambiguous
-              ? "Dates are partly year-only, so no total experience was claimed."
-              : `Experience from your dates: ${timeline.label}, overlaps removed.`}
-            {result.repaired && " One automatic fix pass was applied."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap gap-1.5 text-xs">
-            <Badge variant="outline">{stats.skillsCount} skills</Badge>
-            <Badge variant="outline">{stats.skillCategories} categories</Badge>
-            <Badge variant="outline">{stats.totalBullets} bullets</Badge>
-            <Badge variant="outline">
-              {stats.numericBullets} with numbers ({stats.numericPct}%)
-            </Badge>
-            <Badge variant="outline">{stats.summaryWords}-word summary</Badge>
-          </div>
-          {corrections.length > 0 && (
-            <ul className="space-y-1 text-xs text-muted-foreground">
-              {corrections.map((c, i) => (
-                <li key={i} className="flex gap-1.5">
-                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" /> {c}
-                </li>
-              ))}
-            </ul>
-          )}
-          {issues.length === 0 ? (
-            <p className="flex items-center gap-1.5 text-xs text-success">
-              <CheckCircle2 className="h-3.5 w-3.5" /> No issues found.
-            </p>
-          ) : (
-            <ul className="space-y-1 text-xs">
-              {issues.map((it, i) => (
-                <li
-                  key={i}
-                  className={it.severity === "fix" ? "text-warning" : "text-muted-foreground"}
-                >
-                  • {it.message}
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
-
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <Button size="sm" variant="outline" onClick={() => void copy(resumeToText(resume), "Resume text")}>
           <Copy className="h-4 w-4" /> Copy text
         </Button>
@@ -135,9 +63,7 @@ export function ResumeView({ result }: { result: ResumeResult }) {
         <Button size="sm" variant="outline" onClick={() => download(`${fileBase}.json`, "application/json", JSON.stringify(resume, null, 2))}>
           <Download className="h-4 w-4" /> .json
         </Button>
-        {open > 0 && notes.length > 0 && (
-          <span className="self-center text-xs text-warning">{open} item(s) unconfirmed</span>
-        )}
+        <span className="ml-auto text-xs text-muted-foreground">{summaryLine}</span>
       </div>
 
       <Card>
@@ -231,6 +157,31 @@ export function ResumeView({ result }: { result: ResumeResult }) {
           )}
         </CardContent>
       </Card>
+
+      {(notes.length > 0 || hasDetails) && (
+        <div className="space-y-1.5 text-xs text-muted-foreground">
+          {notes.length > 0 && (
+            <details>
+              <summary className="cursor-pointer select-none">Assumptions behind the draft ({notes.length})</summary>
+              <ul className="mt-1.5 space-y-1 pl-4">
+                {notes.map((n, i) => (
+                  <li key={i} className="list-disc">{n}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {hasDetails && (
+            <details>
+              <summary className="cursor-pointer select-none">Checks</summary>
+              <ul className="mt-1.5 space-y-1 pl-4">
+                {[...corrections, ...issues.map((i) => i.message)].map((m, i) => (
+                  <li key={i} className="list-disc">{m}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
     </div>
   );
 }

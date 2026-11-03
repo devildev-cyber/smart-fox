@@ -440,7 +440,6 @@ export type ResumeIssueCode =
   | "jd_overlap"
   | "bullets_count"
   | "metric_ratio"
-  | "metrics_unverified"
   | "first_person"
   | "filler"
   | "tech_stack_line"
@@ -635,14 +634,6 @@ export function lintResume(
       message: `${stats.numericBullets} of ${stats.totalBullets} bullets (${stats.numericPct}%) contain a number; about 30% is the target. A credible resume matters more than hitting the ratio.`,
     });
   }
-  if (stats.numericBullets > 0 && resume.verification_notes.length === 0) {
-    issues.push({
-      code: "metrics_unverified",
-      severity: "warn",
-      message: "There are numbers in the bullets but no verification notes. Treat every figure as unconfirmed.",
-    });
-  }
-
   const everyLine = lines.map((l) => l.text);
   if (everyLine.some((t) => /\b(I|my|me|I'm|I've)\b/.test(t))) {
     issues.push({ code: "first_person", severity: "warn", message: "Some lines use first person." });

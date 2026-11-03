@@ -2,9 +2,9 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { FileText, ScanText, Sparkles } from "lucide-react";
+import { ChevronDown, FileText, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
@@ -42,12 +42,11 @@ export default function ResumePage() {
   const [loading, setLoading] = React.useState(true);
 
   const [facts, setFacts] = React.useState<ResumeFacts | null>(null);
-  const [warnings, setWarnings] = React.useState<string[]>([]);
+  const [showFacts, setShowFacts] = React.useState(false);
   const [notes, setNotes] = React.useState("");
   const [result, setResult] = React.useState<ResumeResult | null>(null);
 
-  const [extracting, setExtracting] = React.useState(false);
-  const [generating, setGenerating] = React.useState(false);
+  const [working, setWorking] = React.useState<"" | "reading" | "writing">("");
   const [elapsed, setElapsed] = React.useState(0);
 
   React.useEffect(() => {
@@ -68,13 +67,13 @@ export default function ResumePage() {
     })();
   }, []);
 
-  // Remember each candidate's verified facts and notes, and each pair's result.
+  // Remember each candidate's career facts and notes, and each pair's resume.
   React.useEffect(() => {
     if (!candidateId) return;
     const stored = load<unknown>(`facts.${candidateId}`);
     const parsed = stored ? resumeFactsSchema.safeParse(stored) : null;
     setFacts(parsed?.success ? parsed.data : null);
-    setWarnings([]);
+    setShowFacts(false);
     setNotes(load<string>(`notes.${candidateId}`) ?? "");
   }, [candidateId]);
 
@@ -84,65 +83,54 @@ export default function ResumePage() {
   }, [candidateId, jobId]);
 
   React.useEffect(() => {
-    if (!generating) return;
+    if (working !== "writing") return;
     setElapsed(0);
     const t = window.setInterval(() => setElapsed((s) => s + 1), 1000);
     return () => window.clearInterval(t);
-  }, [generating]);
+  }, [working]);
 
   const updateFacts = (next: ResumeFacts) => {
     setFacts(next);
     if (candidateId) save(`facts.${candidateId}`, next);
   };
 
-  const extract = async () => {
-    if (!candidateId) return;
-    setExtracting(true);
-    try {
-      const out = await apiFetch<{ facts: ResumeFacts; warnings: string[] }>("/api/resume/facts", {
-        method: "POST",
-        body: JSON.stringify({ candidateProfileId: candidateId }),
-      });
-      updateFacts(out.facts);
-      setWarnings(out.warnings);
-      toast.success("Read your resume", {
-        description: "Check every job, title and date below before generating.",
-      });
-    } catch (err) {
-      toast.error("Could not read the resume", {
-        description: err instanceof Error ? err.message : "Unknown error",
-      });
-    } finally {
-      setExtracting(false);
-    }
-  };
-
+  // One button: read the jobs/dates/education from the saved resume the first
+  // time, then write the resume for the chosen job.
   const generate = async () => {
-    if (!candidateId || !jobId || !facts) return;
-    setGenerating(true);
+    if (!candidateId || !jobId) return;
     try {
+      let useFacts = facts;
+      if (!useFacts || useFacts.experience.length === 0) {
+        setWorking("reading");
+        const out = await apiFetch<{ facts: ResumeFacts }>("/api/resume/facts", {
+          method: "POST",
+          body: JSON.stringify({ candidateProfileId: candidateId }),
+        });
+        useFacts = out.facts;
+        updateFacts(useFacts);
+        if (useFacts.experience.length === 0) {
+          setShowFacts(true);
+          toast.error("No jobs found in the resume", {
+            description: "Add your jobs under Career facts, then generate again.",
+          });
+          return;
+        }
+      }
+      setWorking("writing");
       const out = await apiFetch<ResumeResult>("/api/resume/generate", {
         method: "POST",
-        body: JSON.stringify({ candidateProfileId: candidateId, jobProfileId: jobId, facts, notes }),
+        body: JSON.stringify({ candidateProfileId: candidateId, jobProfileId: jobId, facts: useFacts, notes }),
       });
       setResult(out);
       save(`result.${candidateId}.${jobId}`, out);
-      toast.success("Resume ready", {
-        description:
-          out.resume.verification_notes.length > 0
-            ? "Review the items to confirm at the top."
-            : undefined,
-      });
     } catch (err) {
       toast.error("Could not generate the resume", {
         description: err instanceof Error ? err.message : "Unknown error",
       });
     } finally {
-      setGenerating(false);
+      setWorking("");
     }
   };
-
-  const ready = Boolean(facts && facts.experience.length > 0 && jobId);
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 px-3 py-5 sm:px-4">
@@ -151,8 +139,8 @@ export default function ResumePage() {
           <FileText className="h-5 w-5" /> Resume
         </h1>
         <p className="text-sm text-muted-foreground">
-          Build a resume for one job. Your employers, titles, dates and education are kept exactly as
-          you confirm them. The rest is written for the role.
+          Pick the candidate and the job, then generate. Your employers, titles, dates and education
+          stay exactly as they are in your saved resume.
         </p>
       </div>
 
@@ -202,69 +190,59 @@ export default function ResumePage() {
             </div>
           </div>
 
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">1. Career facts</CardTitle>
-              <CardDescription>
-                Read from your saved resume. These are copied into the new resume word for word, so
-                fix anything that is wrong or missing here.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Button size="sm" variant={facts ? "outline" : "default"} onClick={() => void extract()} disabled={extracting}>
-                {extracting ? <Spinner /> : <ScanText className="h-4 w-4" />}
-                {facts ? "Read the resume again" : "Read my resume"}
-              </Button>
-              {warnings.length > 0 && (
-                <ul className="space-y-1 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
-                  {warnings.map((w, i) => (
-                    <li key={i}>• {w}</li>
-                  ))}
-                </ul>
-              )}
-              {facts && <ResumeFactsEditor facts={facts} onChange={updateFacts} />}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">2. Real projects and results (optional)</CardTitle>
-              <CardDescription>
-                Anything true you want used: projects, tools, numbers, the kind of work you did. These
-                are used before anything the writer makes up.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Textarea
-                value={notes}
-                onChange={(e) => {
-                  setNotes(e.target.value);
-                  if (candidateId) save(`notes.${candidateId}`, e.target.value);
-                }}
-                placeholder="e.g. At Acme I moved nightly billing from cron to a queue-based job runner; the run went from about 4 hours to 50 minutes."
-                className="min-h-[110px]"
-                maxLength={8000}
-              />
-            </CardContent>
-          </Card>
+          <div className="space-y-1.5">
+            <Label>Anything you want included (optional)</Label>
+            <Textarea
+              value={notes}
+              onChange={(e) => {
+                setNotes(e.target.value);
+                if (candidateId) save(`notes.${candidateId}`, e.target.value);
+              }}
+              placeholder="Projects, tools, results, or the kind of work you want the resume to lean on."
+              className="min-h-[80px]"
+              maxLength={8000}
+            />
+          </div>
 
           <div className="flex items-center gap-3">
-            <Button onClick={() => void generate()} disabled={!ready || generating}>
-              {generating ? <Spinner /> : <Sparkles className="h-4 w-4" />} Generate resume
+            <Button onClick={() => void generate()} disabled={!jobId || working !== ""}>
+              {working ? <Spinner /> : <Sparkles className="h-4 w-4" />}
+              {result ? "Generate again" : "Generate resume"}
             </Button>
-            {generating && (
-              <span className="text-xs text-muted-foreground">
-                Working… {elapsed}s. This can take a few minutes on a Pro model.
-              </span>
+            {working === "reading" && (
+              <span className="text-xs text-muted-foreground">Reading your resume…</span>
             )}
-            {!ready && !generating && (
+            {working === "writing" && (
               <span className="text-xs text-muted-foreground">
-                {facts ? "Add at least one job to the career facts." : "Read your resume first."}
+                Writing… {elapsed}s. This can take a few minutes on a Pro model.
               </span>
             )}
           </div>
 
           {result && <ResumeView result={result} />}
+
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowFacts((v) => !v)}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              aria-expanded={showFacts}
+            >
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showFacts ? "rotate-180" : ""}`} />
+              Career facts (jobs, dates, education)
+            </button>
+            {showFacts && (
+              <div className="mt-3">
+                {facts ? (
+                  <ResumeFactsEditor facts={facts} onChange={updateFacts} />
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    They are read from your saved resume the first time you generate.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
         </>
       )}
     </div>
