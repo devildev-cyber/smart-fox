@@ -6,6 +6,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   platform: process.platform,
   minimize: () => ipcRenderer.send("win:minimize"),
   close: () => ipcRenderer.send("win:close"),
+  resize: {
+    start: () => ipcRenderer.send("win:resize-start"),
+    move: (dx, dy) => ipcRenderer.send("win:resize-move", dx, dy),
+    end: () => ipcRenderer.send("win:resize-end"),
+  },
   togglePin: () => ipcRenderer.invoke("win:toggle-pin"),
   cycleOpacity: () => ipcRenderer.invoke("win:cycle-opacity"),
   // Stealth: exclude the overlay from screen capture / screen share.

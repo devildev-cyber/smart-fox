@@ -13,6 +13,12 @@ export interface ElectronAPI {
   platform: NodeJS.Platform;
   minimize: () => void;
   close: () => void;
+  /** Bottom-right grip resize: pointer movement since the drag began. */
+  resize: {
+    start: () => void;
+    move: (dx: number, dy: number) => void;
+    end: () => void;
+  };
   togglePin: () => Promise<boolean>;
   cycleOpacity: () => Promise<number>;
   stealth: {

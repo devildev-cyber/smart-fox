@@ -103,3 +103,11 @@
     border-radius: 9999px;
   }
 }
+
+/* Desktop app: the mouse cursor never changes shape (no hand over buttons, no
+   I-beam over fields). !important is needed to beat Tailwind's cursor-* utilities
+   and the browser's own styles on inputs, buttons and links. */
+.is-electron,
+.is-electron * {
+  cursor: default !important;
+}

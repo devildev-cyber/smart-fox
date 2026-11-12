@@ -9,6 +9,7 @@ const {
   ipcMain,
   session,
   desktopCapturer,
+  screen,
 } = require("electron");
 const path = require("path");
 const net = require("net");
@@ -182,6 +183,9 @@ function createWindow() {
     height: 600,
     minWidth: 300,
     minHeight: 380,
+    // The OS resize border shows resize cursors on every edge, so it's off. The
+    // page draws its own grip in the bottom-right corner instead.
+    resizable: false,
     frame: false,
     show: false,
     alwaysOnTop: true,
@@ -277,6 +281,30 @@ function registerShortcuts() {
     mainWindow?.webContents.send("coding-capture");
   });
 }
+
+// Bottom-right grip resize. The renderer reports how far the pointer has moved
+// since the drag began; the top-left corner stays put.
+let resizeStart = null;
+ipcMain.on("win:resize-start", () => {
+  resizeStart = mainWindow ? mainWindow.getBounds() : null;
+});
+ipcMain.on("win:resize-move", (_e, dx, dy) => {
+  if (!mainWindow || !resizeStart) return;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+  const area = screen.getDisplayMatching(resizeStart).workArea;
+  const [minW, minH] = mainWindow.getMinimumSize();
+  const maxW = Math.max(minW, area.x + area.width - resizeStart.x);
+  const maxH = Math.max(minH, area.y + area.height - resizeStart.y);
+  mainWindow.setBounds({
+    x: resizeStart.x,
+    y: resizeStart.y,
+    width: Math.min(maxW, Math.max(minW, Math.round(resizeStart.width + dx))),
+    height: Math.min(maxH, Math.max(minH, Math.round(resizeStart.height + dy))),
+  });
+});
+ipcMain.on("win:resize-end", () => {
+  resizeStart = null;
+});
 
 ipcMain.on("win:minimize", () => mainWindow?.minimize());
 ipcMain.on("win:close", () => mainWindow?.close());
