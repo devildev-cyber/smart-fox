@@ -38,6 +38,7 @@ import {
   type SharpenStory,
 } from "./schemas";
 import { isToldByCandidate, toldDetails } from "./story-truth";
+import { lastSentences } from "./transcript-turn";
 import {
   buildAnswerContext,
   selectContext,
@@ -133,7 +134,8 @@ export async function streamGenerateAnswer(params: {
   detectedQuestion: string;
   questionType?: string;
   recentTranscript: string;
-  focusHint?: string;
+  /** Triggered by a pause (auto-answer) rather than the Generate button. */
+  auto?: boolean;
   candidate?: CandidateStructured | null;
   job?: JobStructured | null;
   stories?: StoryLike[];
@@ -149,15 +151,10 @@ export async function streamGenerateAnswer(params: {
   priorTurns?: PriorTurn[];
   codingContext?: string;
 }) {
-  const oneShot = !params.detectedQuestion.trim();
-
-  // Use the most specific signal we have to retrieve relevant resume facts and
-  // stories: an explicit question, else the latest-utterance focus hint, else
-  // the whole transcript.
+  // Retrieve resume facts and stories by what was said last: the typed line if
+  // there is one, else the last few sentences of the conversation.
   const retrievalQuery =
-    params.detectedQuestion.trim() ||
-    (params.focusHint ?? "").trim() ||
-    params.recentTranscript;
+    params.detectedQuestion.trim() || lastSentences(params.recentTranscript, 3);
 
   const selected = selectContext({
     question: retrievalQuery,
@@ -170,7 +167,6 @@ export async function streamGenerateAnswer(params: {
     detectedQuestion: params.detectedQuestion,
     questionType: params.questionType,
     recentTranscript: params.recentTranscript,
-    focusHint: params.focusHint,
     candidate: params.candidate,
     job: params.job,
     selected,
@@ -188,9 +184,9 @@ export async function streamGenerateAnswer(params: {
       ? `\n\nEXPANDING: the candidate was just shown this BRIEF answer to the same question:\n"""\n${params.expandOn.trim()}\n"""\nWrite the DEEP version of that SAME answer: same story, same facts, same opening point, with the next layer added. It replaces the brief one, so don't mention a brief version and don't switch to a different example.`
       : "";
 
-  const oneShotInstruction = oneShot
-    ? "\n\nNO EXPLICIT QUESTION WAS PROVIDED. YOU decide what's being asked: identify the interviewer's most recent question or prompt (it's at the end of the transcript; a focus hint may point at it). If they packed several asks into that latest turn, answer each. Ignore the candidate's own speech, greetings, and filler. If the latest turn is not actually something to answer yet (acknowledgement, small talk, the candidate speaking, or an unfinished fragment), output exactly NO_ANSWER and nothing else."
-    : "";
+  const requestKind = params.auto
+    ? "\n\nREQUEST TYPE: AUTO (triggered by a pause). Stay silent with NO_ANSWER only if there is genuinely nothing for the candidate to say yet; if in doubt, reply."
+    : "\n\nREQUEST TYPE: MANUAL (the candidate pressed Generate). ALWAYS reply, even to a short remark. Never output NO_ANSWER.";
 
   const language = languageBlock(params.answerLanguage);
   const languageInstruction = language ? `\n\n${language}` : "";
@@ -201,7 +197,7 @@ export async function streamGenerateAnswer(params: {
   const system = `${buildAnswerSystemPrompt(
     params.boldKeywords,
     params.allowInventedDetails ?? true
-  )}${depthInstruction}\n\nMODE:\n${modeInstruction}${expandInstruction}${oneShotInstruction}${languageInstruction}`;
+  )}${depthInstruction}\n\nMODE:\n${modeInstruction}${expandInstruction}${requestKind}${languageInstruction}`;
 
   // Live answers use the user-selectable "live answer" model (fastModel) so the
   // teleprompter streams quickly; heavy analysis stays on the strong model.

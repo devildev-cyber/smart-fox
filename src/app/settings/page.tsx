@@ -291,7 +291,7 @@ export default function SettingsPage() {
           />
           <ToggleRow
             label="Stealth (hide from screen share)"
-            description="Desktop app only. On (default): the overlay is excluded from screen capture / screen share and hidden from the taskbar — it stays visible on your screen. Toggle anytime with Ctrl/Cmd+Shift+S."
+            description="Desktop app only. On: the overlay is excluded from screen capture / screen share and hidden from the taskbar — it stays visible on your screen. Always off when the app starts. Toggle anytime with Ctrl/Cmd+Shift+S."
             checked={settings.stealth}
             onCheckedChange={(v) => {
               update({ stealth: v });

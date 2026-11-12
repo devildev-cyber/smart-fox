@@ -385,9 +385,10 @@ export const generateAnswerRequestSchema = z
     // Optional: if empty, the model infers the latest question from the
     // transcript and answers it in a single call (faster).
     detectedQuestion: z.string().default(""),
-    // Soft steer toward the interviewer's most recent words (the latest
-    // utterance the candidate clicked to answer). The model can still correct it.
-    focusHint: z.string().default(""),
+    // True when a pause triggered this (auto-answer); false when the candidate
+    // pressed Generate. Manual requests always get a reply; auto ones may stay
+    // silent when there is nothing to say yet.
+    auto: z.boolean().default(false),
     questionType: questionTypeSchema.optional(),
     answerMode: answerModeSchema.default("brief"),
     answerLanguage: answerLanguageSchema.default("en"),
@@ -405,9 +406,9 @@ export const generateAnswerRequestSchema = z
     codingContext: z.string().max(6000).default(""),
   })
   .refine(
-    (d) => d.detectedQuestion.trim() || d.recentTranscript.trim() || d.focusHint.trim(),
+    (d) => d.detectedQuestion.trim() || d.recentTranscript.trim(),
     {
-      message: "Provide a detected question, some recent transcript, or a focus hint.",
+      message: "Provide some recent conversation or a typed line.",
     }
   );
 

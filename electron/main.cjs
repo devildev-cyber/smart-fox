@@ -47,10 +47,10 @@ let pinned = true;
 const OPACITY_STEPS = [1, 0.9, 0.8, 0.7, 0.6];
 let currentOpacity = 0.9;
 // Stealth: exclude the overlay from screen capture / screen share (and hide it
-// from the taskbar). ON by default — it stays fully visible on the physical
-// screen but is invisible to Zoom/Meet/Teams share, OBS, and screenshots. The
-// renderer re-syncs this to the user's persisted setting shortly after load.
-let stealthEnabled = true;
+// from the taskbar). OFF at every launch; turn it on from the titlebar,
+// Settings, or the hotkey. When on, the overlay stays fully visible on the
+// physical screen but is invisible to Zoom/Meet/Teams share, OBS, and screenshots.
+let stealthEnabled = false;
 
 /** Apply the current stealth state to the window (content protection + taskbar). */
 function applyStealth(enabled) {

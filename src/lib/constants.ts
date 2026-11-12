@@ -95,7 +95,7 @@ export interface AppSettings {
   endOfTurnSeconds: number;
   /**
    * Stealth: exclude the desktop overlay from screen capture / screen share
-   * (and hide it from the taskbar). On by default. Desktop app only.
+   * (and hide it from the taskbar). Off at every launch. Desktop app only.
    */
   stealth: boolean;
   /** On-screen size of the generated answer text. */
@@ -124,7 +124,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Silence (in seconds) before we treat the interviewer's turn as finished.
   // Lower = snappier live trigger; a superseding run aborts a slightly-early one.
   endOfTurnSeconds: 1.2,
-  stealth: true,
+  stealth: false,
   answerFontSize: "base",
   answerLanguage: "en",
 };

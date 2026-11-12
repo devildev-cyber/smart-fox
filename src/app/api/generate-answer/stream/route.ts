@@ -41,7 +41,7 @@ export async function POST(request: Request) {
     detectedQuestion: data.detectedQuestion,
     questionType: data.questionType,
     recentTranscript: data.recentTranscript,
-    focusHint: data.focusHint,
+    auto: data.auto,
     candidate,
     job,
     stories,

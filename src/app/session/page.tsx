@@ -57,8 +57,8 @@ import {
   capTurn,
   endOfTurnDelayMs,
   lastSentences,
-  latestUtterance,
   stripConsumedPrefix,
+  isRevisionOf,
 } from "@/lib/transcript-turn";
 import { getElectronAPI } from "@/lib/electron";
 import { useSettings } from "@/hooks/use-settings";
@@ -184,6 +184,9 @@ export default function SessionPage() {
   // The interim text we last answered. When Live Captions finalizes it into a
   // final chunk afterward, we strip that overlap so it isn't answered twice.
   const consumedInterimRef = React.useRef("");
+  // The exact speech the last reply was built from, so a caption revision of it
+  // isn't mistaken for something new.
+  const lastSentTextRef = React.useRef("");
   // Streaming + session memory.
   const streamAbort = React.useRef<AbortController | null>(null);
   const priorTurnsRef = React.useRef<PriorTurnState[]>([]);
@@ -356,10 +359,8 @@ export default function SessionPage() {
 
   /* ----------------------------- Delta input ----------------------------- */
 
-  // What to answer next: only the speech that's new since the last answer, plus
-  // a couple of sentences of overlap for context. This is the core fix for
-  // "question detection is bad / scripts duplicated" — we stop re-feeding the
-  // whole rolling window on every Generate.
+  // What to reply to next: everything said since the last reply (and nothing
+  // before it), so the whole rolling window isn't re-fed on every Generate.
   const buildDelta = React.useCallback(() => {
     const all = finalsRef.current;
     const fresh = all.filter((f) => f.seq > consumedSeqRef.current);
@@ -369,22 +370,17 @@ export default function SessionPage() {
     if (consumedInterimRef.current) {
       newText = stripConsumedPrefix(newText, consumedInterimRef.current);
     }
-    // Bound the turn to whole, most-recent sentences: if nothing was answered
-    // for a while, a long backlog must not bury the actual ask at the end.
+    // Live Captions rewrites earlier words after the fact; a re-worded copy of
+    // what we already replied to is not new speech.
+    if (newText && lastSentTextRef.current && isRevisionOf(newText, lastSentTextRef.current)) {
+      newText = "";
+    }
+    // Safety bound only: a very long backlog keeps its newest whole sentences.
     newText = capTurn(newText);
-    const consumedText = all
-      .filter((f) => f.seq <= consumedSeqRef.current)
-      .map((f) => f.text)
-      .join(" ");
-    const context = lastSentences(
-      consumedText,
-      TURN_LIMITS.contextSentences,
-      TURN_LIMITS.contextMaxUnits
-    );
     const maxSeq = fresh.length
       ? fresh[fresh.length - 1].seq
       : consumedSeqRef.current;
-    return { newText, context, maxSeq };
+    return { newText, maxSeq };
   }, []);
 
   /* --------------------------- Generation --------------------------- */
@@ -476,55 +472,47 @@ export default function SessionPage() {
     ) => {
       const question = (opts.override ?? detectedRef.current).trim();
 
-      // Decide what to send, and whether to advance the "answered up to here"
-      // marker. We hand the model two distinct things:
-      //   focusHint  -> the interviewer's latest words, i.e. what to ANSWER
-      //   transcript -> earlier speech, only as background to interpret it
+      // The model gets everything said since the last reply and works out what
+      // the interviewer wants to hear. There is no question-detection step.
       let transcript = "";
-      let focusHint = "";
       let advanceTo: number | null = null;
-      // Interim snapshot at the moment we build the delta, committed on success
-      // so the next delta can strip it once it finalizes.
+      // Interim snapshot at the moment we check, committed on success so the next
+      // check can strip it once it finalizes.
       let interimSnapshot = "";
 
       if (question) {
-        // Explicit typed question: it IS the ask. Send recent speech as context.
+        // A typed line stands in for the interviewer's words; recent speech is context.
         transcript = recentForAnswer();
       } else if (opts.wide) {
-        // Regenerate / recovery: re-read a wider window and ignore the marker so
-        // a wrong boundary or mis-click can be corrected. Point at the tail.
+        // Regenerate / recovery: a wider tail, marker untouched.
         transcript = lastSentences(
           recentTranscript(),
           TURN_LIMITS.wideSentences,
           TURN_LIMITS.wideMaxUnits
         );
-        focusHint = latestUtterance(transcript);
       } else {
-        // Normal flow: the interviewer's latest TURN is everything new since the
-        // last answer. Hand that WHOLE turn to the model as the thing to answer
-        // (so a long, multi-question turn gets each part answered), with a
-        // little earlier speech as background only. This is the core of "send
-        // the last part as raw script, get back the question(s) + answer".
-        const { newText, context, maxSeq } = buildDelta();
+        // Everything said since the last reply, exactly as heard.
+        const { newText, maxSeq } = buildDelta();
         if (newText) {
-          focusHint = newText;
-          transcript = context; // earlier background only (may be empty)
+          transcript = newText;
           advanceTo = maxSeq;
           interimSnapshot = interimRef.current.trim();
         } else if (opts.auto) {
-          // Auto-answer with nothing new to say: do nothing (no re-answering).
+          // Auto-answer with nothing new said: nothing to react to.
           return;
-        } else {
-          // Manual click with nothing new: best-effort answer of the recent
-          // window. Harmless, and the marker is left alone.
-          transcript = recentForAnswer();
-          focusHint = latestUtterance(transcript);
+        } else if (lastSentTextRef.current) {
+          // Manual press, nothing said since the last reply. Don't quietly answer
+          // the same thing again; Regenerate is the way to redo it.
+          toast("Nothing new since the last reply", {
+            description: "Use Regenerate to redo it.",
+          });
+          return;
         }
       }
 
-      if (!question && !transcript && !focusHint) {
-        toast.error("Nothing to answer yet", {
-          description: "Record/paste some transcript, or type a question.",
+      if (!question && !transcript) {
+        toast.error("Nothing to reply to yet", {
+          description: "Record or paste some conversation, or type a line.",
         });
         return;
       }
@@ -537,7 +525,7 @@ export default function SessionPage() {
             jobProfileId: jobId || undefined,
             recentTranscript: transcript,
             detectedQuestion: question,
-            focusHint,
+            auto: Boolean(opts.auto),
             questionType,
             answerMode: mode,
             answerLanguage: settings.answerLanguage,
@@ -573,6 +561,7 @@ export default function SessionPage() {
           prevConsumedSeqRef.current = consumedSeqRef.current;
           consumedSeqRef.current = advanceTo;
           consumedInterimRef.current = interimSnapshot;
+          lastSentTextRef.current = transcript;
         }
         // NOTE: never write the inferred question back into the override box —
         // doing so makes it "stick" and forces every later answer onto a stale
@@ -778,6 +767,7 @@ export default function SessionPage() {
     consumedSeqRef.current = 0;
     prevConsumedSeqRef.current = 0;
     consumedInterimRef.current = "";
+    lastSentTextRef.current = "";
     lastAnsweredRef.current = "";
     priorTurnsRef.current = [];
     setQuestionReady(false);

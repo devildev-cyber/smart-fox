@@ -21,15 +21,16 @@ export function ElectronTitlebar() {
 
   React.useEffect(() => setMounted(true), []);
 
-  // Sync the main process to the user's persisted stealth preference once
-  // settings hydrate, and reflect hotkey toggles (Ctrl/Cmd+Shift+S) back.
+  // Stealth always starts off. The main process owns the real state, so mirror
+  // it into the UI once settings hydrate (never push a saved value the other
+  // way), and reflect hotkey toggles (Ctrl/Cmd+Shift+S) back.
   React.useEffect(() => {
     if (!hydrated) return;
     const api = getElectronAPI();
     if (!api) return;
-    void api.stealth.set(settings.stealth);
+    void api.stealth.get().then((enabled) => update({ stealth: enabled }));
     return api.stealth.onChanged((enabled) => update({ stealth: enabled }));
-    // Sync once on hydrate; later changes flow through the button / hotkey.
+    // Mirror once on hydrate; later changes flow through the button / hotkey.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated]);
 

@@ -5,6 +5,7 @@ import {
   capTurn,
   endOfTurnDelayMs,
   lastSentences,
+  isRevisionOf,
   latestUtterance,
   speechUnits,
   stripConsumedPrefix,
@@ -49,7 +50,7 @@ test("a single over-long sentence keeps its END, where the ask is", () => {
 });
 
 test("capTurn bounds a long unanswered backlog but keeps the newest ask", () => {
-  const backlog = Array.from({ length: 40 }, (_, i) => `Filler sentence number ${i} goes here.`).join(" ");
+  const backlog = Array.from({ length: 80 }, (_, i) => `Filler sentence number ${i} goes here.`).join(" ");
   const out = capTurn(`${backlog} Tell me about a time you led a migration.`);
   assert.ok(speechUnits(out) <= TURN_LIMITS.turnMaxUnits);
   assert.ok(out.endsWith("Tell me about a time you led a migration."));
@@ -93,4 +94,11 @@ test("end-of-turn: bare filler never arms a timer, a one-word question does", ()
   assert.equal(endOfTurnDelayMs("Right so", 1200), null);
   assert.equal(endOfTurnDelayMs("", 1200), null);
   assert.notEqual(endOfTurnDelayMs("Why?", 1200), null);
+});
+
+test("a re-worded caption of already-answered speech is a revision, new speech is not", () => {
+  const sent = "Tell me about a time you led a migration at your last company";
+  assert.equal(isRevisionOf("Tell me about the time you led a migration at your last company", sent), true);
+  assert.equal(isRevisionOf("And how did you handle the rollback plan there", sent), false);
+  assert.equal(isRevisionOf("Why?", "Why?"), false);
 });

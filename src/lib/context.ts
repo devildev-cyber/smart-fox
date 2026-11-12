@@ -328,7 +328,6 @@ export function buildAnswerContext(params: {
   detectedQuestion: string;
   questionType?: string;
   recentTranscript: string;
-  focusHint?: string;
   candidate?: CandidateStructured | null;
   job?: JobStructured | null;
   selected: SelectedContext;
@@ -340,7 +339,6 @@ export function buildAnswerContext(params: {
 }): string {
   const { detectedQuestion, questionType, recentTranscript, candidate, job, selected } =
     params;
-  const focusHint = (params.focusHint ?? "").trim();
   const transcript = tailAtWordBoundary(recentTranscript, 2000);
   const hasExplicitQuestion = Boolean(detectedQuestion.trim());
 
@@ -420,7 +418,7 @@ export function buildAnswerContext(params: {
   if (priorTurns.length) {
     const recent = priorTurns.slice(-6);
     const lines = recent
-      .map((t) => `- Q: ${t.question.trim()}\n  Said: ${t.answerGist.trim()}`)
+      .map((t) => `- Interviewer: ${t.question.trim()}\n  You said: ${t.answerGist.trim()}`)
       .join("\n");
     parts.push(
       `WHAT YOU'VE ALREADY SAID IN THIS INTERVIEW (canon — every project, name, number and opinion below is now fact. Stay consistent; go deeper on a follow-up; never repeat an answer in full):\n${lines}`
@@ -432,35 +430,23 @@ export function buildAnswerContext(params: {
     );
   }
 
-  // The thing to answer comes LAST. With an explicit question that's the
-  // question; otherwise it's the transcript, framed so the model answers the
-  // LATEST utterance (at the end) rather than something stale.
+  // The conversation comes LAST so the freshest words sit closest to the output.
+  // No "question" is extracted up front: the model reads the tail of the
+  // conversation and works out what the interviewer wants to hear. Only when the
+  // candidate typed the line themselves is it handed over explicitly.
   if (hasExplicitQuestion) {
-    const ask: string[] = [`=== YOUR TASK (answer this now) ===\n\nQUESTION TO ANSWER:\n${detectedQuestion}`];
-    if (questionType) ask.push(`QUESTION TYPE: ${questionType}`);
-    if (transcript) ask.push(`RECENT TRANSCRIPT (context only):\n${transcript}`);
+    const ask: string[] = [
+      `=== YOUR TASK (reply to this now) ===\n\nTHE INTERVIEWER JUST SAID (typed or summarized):\n${detectedQuestion}`,
+    ];
+    if (questionType) ask.push(`TYPE: ${questionType}`);
+    if (transcript) ask.push(`CONVERSATION SO FAR (context only):\n${transcript}`);
     parts.push(ask.join("\n\n"));
   } else {
-    const task: string[] = ["=== YOUR TASK (answer this now) ==="];
-    if (focusHint) {
-      // The latest turn is handed over explicitly, so we don't rely on "it's at
-      // the end of the transcript". Earlier speech (if any) is background only.
-      task.push(
-        "TASK — answer what the interviewer asks under INTERVIEWER'S LATEST WORDS. If they packed SEVERAL distinct questions or prompts into it, answer EACH (as numbered blocks). A prompt may not end in \"?\". Anything under EARLIER CONTEXT is only there to interpret the ask — do NOT re-answer it. Ignore the candidate's own speech, greetings, and filler."
-      );
-      task.push(`INTERVIEWER'S LATEST WORDS — this is what to answer:\n${focusHint}`);
-      if (transcript) {
-        task.push(`EARLIER CONTEXT (background only, already handled):\n${transcript}`);
-      }
-    } else {
-      // No explicit latest-turn hint: fall back to "the ask is at the end".
-      task.push(
-        "TASK — answer the interviewer's MOST RECENT question or prompt. It's at the END of the transcript; earlier lines are only there to interpret it. If several distinct things were asked, answer each. A prompt may not end in \"?\". Ignore the candidate's own speech, greetings, and filler."
-      );
-      if (transcript) {
-        task.push(`TRANSCRIPT:\n${transcript}`);
-      }
-    }
+    const task: string[] = ["=== YOUR TASK (reply now) ==="];
+    task.push(
+      "Work out what the interviewer just said and what they want to hear, then give the candidate's next reply. The latest words are at the END; earlier lines are context. Both speakers are mixed together; don't reply as if the candidate's own lines were the interviewer's."
+    );
+    if (transcript) task.push(`CONVERSATION (most recent last):\n${transcript}`);
     parts.push(task.join("\n\n"));
   }
 

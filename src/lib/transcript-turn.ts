@@ -25,7 +25,7 @@ import {
 export const TURN_LIMITS = {
   // The unanswered turn. Long enough for a real multi-part question with its
   // setup; short enough that a backlog of stale talk can't bury the ask.
-  turnMaxUnits: 110,
+  turnMaxUnits: 350,
   // Earlier, already-answered speech sent as background only.
   contextSentences: 3,
   contextMaxUnits: 60,
@@ -129,6 +129,30 @@ export function stripConsumedPrefix(text: string, consumed: string): string {
   const max = Math.min(t.length, c.length);
   while (k < max && normWord(t[k]) === normWord(c[k]) && normWord(t[k]) !== "") k++;
   return t.slice(k).join(" ");
+}
+
+/**
+ * True when `text` is essentially the speech we already replied to, re-worded
+ * by a caption revision (Live Captions rewrites earlier words after the fact, so
+ * a prefix match misses it). Order-free word containment, so a repeated word
+ * can't inflate the score; very short text never counts as a revision.
+ */
+export function isRevisionOf(text: string, sent: string, minWords = 4): boolean {
+  const words = tokenize(text).map(normWord).filter(Boolean);
+  if (words.length < minWords) return false;
+  const pool = new Map<string, number>();
+  for (const w of tokenize(sent).map(normWord).filter(Boolean)) {
+    pool.set(w, (pool.get(w) ?? 0) + 1);
+  }
+  let hits = 0;
+  for (const w of words) {
+    const left = pool.get(w) ?? 0;
+    if (left > 0) {
+      hits += 1;
+      pool.set(w, left - 1);
+    }
+  }
+  return hits / words.length >= 0.85;
 }
 
 /**
